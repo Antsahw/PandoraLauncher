@@ -387,6 +387,7 @@ impl Render for LauncherUI {
             .w_full()
             .justify_center()
             .text_size(rems(0.9375))
+            .line_height(rems(1.0))
             .child(account_head.size_8().min_w_8().min_h_8())
             .child(v_flex().w_full().child(account_name)))
             .on_click({
