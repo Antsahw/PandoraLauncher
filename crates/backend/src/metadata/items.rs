@@ -280,7 +280,7 @@ impl<'a> MetadataItem for ModrinthProjectVersionsMetadataItem<'a> {
     type T = ModrinthProjectVersionsResult;
 
     fn request(&self, client: &reqwest::Client) -> RequestBuilder {
-        let url = format!("https://api.modrinth.com/v2/project/{}/version", self.0.project_id);
+        let url = format!("https://api.modrinth.com/v2/project/{}/version?include_changelog=false", self.0.project_id);
         let mut request = client.get(url);
         if let Some(loaders) = &self.0.loaders && let Ok(str) = serde_json::to_string(loaders) {
             request = request.query(&[("loaders", str)]);
