@@ -7,6 +7,7 @@ use gpui_component::{
 };
 use rand::Rng;
 use rustc_hash::FxHashMap;
+use schema::pandora_update::UpdatePrompt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -19,6 +20,7 @@ use crate::{
 pub struct LauncherUI {
     data: DataEntities,
     page: LauncherPage,
+    pub update: Option<UpdatePrompt>,
     sidebar_state: Entity<ResizableState>,
     default_sidebar_width: f32,
     recent_instances: heapless::Vec<(InstanceID, SharedString), 3>,
@@ -96,7 +98,7 @@ pub enum LauncherPage {
 }
 
 impl LauncherPage {
-    fn render(self, data: &DataEntities, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, ui: &LauncherUI, window: &mut Window, cx: &mut App) -> impl IntoElement {
         fn process(entity: Entity<impl Page>, window: &mut Window, cx: &mut App) -> (bool, AnyElement, AnyElement) {
             entity.update(cx, |page, cx| {
                 (page.scrollable(cx), page.controls(window, cx).into_any_element(), page.render(window, cx).into_any_element())
@@ -115,8 +117,13 @@ impl LauncherPage {
         };
 
         let config = InterfaceConfig::get(cx);
-        let page_path = PagePath::new(data.clone(), config.main_page.clone(), config.page_path.clone());
-        let title_bar = TitleBar::new(page_path, controls);
+        let page_path = PagePath::new(ui.data.clone(), config.main_page.clone(), config.page_path.clone());
+        let title_bar = TitleBar {
+            page_path,
+            controls,
+            update: ui.update.clone(),
+            send: ui.data.backend_handle.clone(),
+        };
 
         if scrollable {
             v_flex()
@@ -229,6 +236,7 @@ impl LauncherUI {
         Self {
             data: data.clone(),
             page,
+            update: None,
             sidebar_state,
             default_sidebar_width,
             recent_instances,
@@ -627,7 +635,7 @@ impl Render for LauncherUI {
         h_resizable("container")
             .with_state(&self.sidebar_state)
             .child(resizable_panel().size(px(self.default_sidebar_width)).size_range(px(150.)..px(225.)).child(sidebar))
-            .child(self.page.clone().render(&self.data, window, cx).into_any_element())
+            .child(self.page.clone().render(&self, window, cx).into_any_element())
     }
 }
 
