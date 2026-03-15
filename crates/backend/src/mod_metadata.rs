@@ -360,8 +360,8 @@ impl ModMetadataManager {
             png_icon = load_icon(icon_file);
         }
 
-        let authors = if let Some(authors) = &first.authors {
-            format!("By {authors}").into()
+        let authors = if let Some(authors) = create_authors_string(&first.authors) {
+            authors.into()
         } else {
             "".into()
         };

@@ -44,3 +44,18 @@ pub fn skip_if_none<T>(value: &Option<T>) -> bool {
 pub fn default_true() -> bool {
     true
 }
+
+pub fn single_or_seq<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if let Ok(value) = T::deserialize(value.clone()) {
+        Ok(vec![value])
+    } else if let Ok(value) = <Vec<T>>::deserialize(value) {
+        Ok(value)
+    } else {
+        Ok(Vec::new())
+    }
+}
