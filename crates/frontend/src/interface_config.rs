@@ -44,6 +44,8 @@ pub struct InterfaceConfig {
     #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub quit_on_main_closed: bool,
     #[serde(default, deserialize_with = "schema::try_deserialize")]
+    pub hide_usernames: bool,
+    #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub hide_server_addresses: bool,
     #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub show_snapshots_in_create_instance: bool,
@@ -75,9 +77,10 @@ impl Default for InterfaceConfig {
             content_filter_version: Default::default(),
             modrinth_page_project_type: default_modrinth_project_type(),
             curseforge_page_class_id: default_curseforge_class_id(),
-            hide_main_window_on_launch: Default::default(),
-            quit_on_main_closed: Default::default(),
-            hide_server_addresses: Default::default(),
+            hide_main_window_on_launch: false,
+            quit_on_main_closed: false,
+            hide_server_addresses: false,
+            hide_usernames: false,
             show_snapshots_in_create_instance: Default::default(),
             instances_view_mode: Default::default(),
             instance_subpage: Default::default()

@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{
 	component::{horizontal_sections::HorizontalSections, named_dropdown::{NamedDropdown, NamedDropdownItem}, path_label::PathLabel},
-	entity::{DataEntities, account::AccountEntries, instance::InstanceEntry, metadata::{AsMetadataResult, FrontendMetadata, FrontendMetadataResult, FrontendMetadataState, TypelessFrontendMetadataResult}},
+	entity::{DataEntities, account::{AccountEntries, AccountExt}, instance::InstanceEntry, metadata::{AsMetadataResult, FrontendMetadata, FrontendMetadataResult, FrontendMetadataState, TypelessFrontendMetadataResult}},
 	interface_config::InterfaceConfig, pages::instances_page::VersionList, ts
 };
 
@@ -115,24 +115,26 @@ impl InstanceSettingsSubpage {
         }).detach();
         cx.subscribe(&version_select_state, Self::on_minecraft_version_selected).detach();
 
+        let hide_usernames = InterfaceConfig::get(cx).hide_usernames;
+
         let account_items = cx.new(|cx| {
-       		let accounts = &data.accounts.read(cx).accounts;
-         	let mut account_items = Vec::with_capacity(accounts.len());
-          	let mut selected = None;
-          	for (index, loop_account) in accounts.iter().enumerate() {
-           		account_items.push(NamedDropdownItem {
-             		name: loop_account.username.clone().into(),
-             		item: loop_account.uuid,
-             	});
-             	if let Some(preferred_account) = account && loop_account.uuid == preferred_account {
-              		selected = Some(IndexPath::new(index));
-              	}
+            let accounts = &data.accounts.read(cx).accounts;
+            let mut account_items = Vec::with_capacity(accounts.len());
+            let mut selected = None;
+            for (index, loop_account) in accounts.iter().enumerate() {
+                account_items.push(NamedDropdownItem {
+                    name: loop_account.username(hide_usernames),
+                    item: loop_account.uuid,
+                });
+                if let Some(preferred_account) = account && loop_account.uuid == preferred_account {
+                    selected = Some(IndexPath::new(index));
+                }
            	}
 
-         	SelectState::new(NamedDropdown::new(account_items), selected, window, cx).searchable(true)
+            SelectState::new(NamedDropdown::new(account_items), selected, window, cx).searchable(true)
         });
         cx.observe_in(&data.accounts, window, |page, accounts, window, cx| {
-        	page.update_account_list(accounts, window, cx);
+            page.update_account_list(accounts, window, cx);
         }).detach();
         cx.subscribe(&account_items, Self::on_account_selected).detach();
 
@@ -360,16 +362,17 @@ impl InstanceSettingsSubpage {
     }
 
     fn update_account_list(&mut self, accounts: Entity<AccountEntries>, window: &mut Window, cx: &mut Context<Self>) {
-  		let list = accounts.read(cx).accounts
-   			.iter().map(|account| NamedDropdownItem {
-	            name: account.username.clone().into(),
-	            item: account.uuid,
-    		}).collect::<Vec<NamedDropdownItem<Uuid>>>();
+        let hide_usernames = InterfaceConfig::get(cx).hide_usernames;
 
+        let list = accounts.read(cx).accounts
+            .iter().map(|account| NamedDropdownItem {
+                name: account.username(hide_usernames),
+                item: account.uuid,
+            }).collect::<Vec<NamedDropdownItem<Uuid>>>();
 
-    	self.account_items.update(cx, move |items, cx| {
-       		items.set_items(NamedDropdown::new(list), window, cx);
-     	})
+        self.account_items.update(cx, move |items, cx| {
+            items.set_items(NamedDropdown::new(list), window, cx);
+        })
     }
 
     pub fn on_new_name_input(

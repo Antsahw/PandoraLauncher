@@ -321,14 +321,19 @@ impl Settings {
 
         div = div.child(crate::labelled(ts!("settings.privacy.title"),
             v_flex().gap_2()
+                .child(Checkbox::new("hide-usernames")
+                    .label(ts!("settings.privacy.hide_usernames"))
+                    .checked(interface_config.hide_usernames)
+                    .on_click(|value, _, cx| {
+                        InterfaceConfig::get_mut(cx).hide_usernames = *value;
+                    }))
                 .child(Checkbox::new("hide-server-addresses")
                     .label(ts!("settings.privacy.hide_server_addresses"))
                     .checked(interface_config.hide_server_addresses)
                     .on_click(|value, _, cx| {
                         InterfaceConfig::get_mut(cx).hide_server_addresses = *value;
                     }))
-                )
-        );
+        ));
 
         div
     }

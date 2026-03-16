@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     component::{menu::{MenuGroup, MenuGroupItem}, page_path::PagePath, resize_panel::{ResizePanel, ResizePanelState}, shrinking_text::ShrinkingText, title_bar::TitleBar}, entity::{
-        DataEntities, instance::{InstanceAddedEvent, InstanceEntries, InstanceModifiedEvent, InstanceMovedToTopEvent, InstanceRemovedEvent}
+        DataEntities, account::AccountExt, instance::{InstanceAddedEvent, InstanceEntries, InstanceModifiedEvent, InstanceMovedToTopEvent, InstanceRemovedEvent}
     }, icon::PandoraIcon, interface_config::InterfaceConfig, modals, pages::{curseforge_page::CurseforgeSearchPage, import::ImportPage, instance::instance_page::InstancePage, instances_page::InstancesPage, modrinth_page::ModrinthSearchPage, modrinth_project_page::ModrinthProjectPage, page::Page, skins_page::SkinsPage, syncing_page::SyncingPage}, png_render_cache, ts
 };
 
@@ -431,7 +431,7 @@ impl Render for LauncherUI {
 
         let accounts = self.data.accounts.read(cx);
         let (account_head, account_name) = if let Some(account) = &accounts.selected_account {
-            let account_name = SharedString::new(account.username.clone());
+            let account_name = account.username(InterfaceConfig::get(cx).hide_usernames);
             let head = if let Some(head) = &account.head {
                 let resize = png_render_cache::ImageTransformation::Resize { width: 32, height: 32 };
                 png_render_cache::render_with_transform(Arc::clone(head), resize, cx)
@@ -486,7 +486,7 @@ impl Render for LauncherUI {
                             } else {
                                 gpui::img(ImageSource::Resource(Resource::Embedded("images/default_head.png".into())))
                             };
-                            let account_name = SharedString::new(account.username.clone());
+                            let account_name = account.username(InterfaceConfig::get(cx).hide_usernames);
 
                             let selected = Some(account.uuid) == selected_account;
 

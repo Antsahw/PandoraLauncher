@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 use schema::minecraft_profile::{SkinState, SkinVariant};
 use uuid::Uuid;
 use crate::{
-    component::player_model_widget::PlayerModelWidget, data_asset_loader::DataAssetLoader, entity::DataEntities, icon::PandoraIcon, pages::page::Page, png_render_cache::ImageTransformation, ts
+    component::player_model_widget::PlayerModelWidget, data_asset_loader::DataAssetLoader, entity::{DataEntities, account::AccountExt}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::page::Page, png_render_cache::ImageTransformation, ts
 };
 
 pub struct SkinsPage {
@@ -189,7 +189,7 @@ impl Render for SkinsPage {
 
         if let Some(account) = &self.data.accounts.read(cx).selected_account {
             let uuid = account.uuid;
-            let username = account.username.clone();
+            let username = account.username(InterfaceConfig::get(cx).hide_usernames);
             if account.offline {
                 controls = ts!("skins.no_offline").into_any_element();
             } else if self.applying_to_account == Some(uuid) {

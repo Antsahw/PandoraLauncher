@@ -740,6 +740,8 @@ settings:
   privacy:
     title:
       en: Privacy
+    hide_usernames:
+      en: Hide usernames
     hide_server_addresses:
       en: Hide server addresses
   proxy:
