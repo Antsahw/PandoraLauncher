@@ -68,6 +68,7 @@ pub struct InstanceContentSummary {
     pub lowercase_search_keys: Arc<[Arc<str>]>,
     pub filename_hash: u64,
     pub path: Arc<Path>,
+    pub can_toggle: bool,
     pub enabled: bool,
     pub content_source: ContentSource,
     pub update: ContentUpdateContext,
@@ -185,15 +186,15 @@ impl ContentUpdateStatus {
 pub struct ContentUpdateContext {
     status: ContentUpdateStatus,
     for_loader: Loader,
-    for_version: Ustr,
+    for_version: &'static str,
 }
 
 impl ContentUpdateContext {
-    pub fn new(status: ContentUpdateStatus, for_loader: Loader, for_version: Ustr) -> Self {
+    pub fn new(status: ContentUpdateStatus, for_loader: Loader, for_version: &'static str) -> Self {
         Self { status, for_loader, for_version }
     }
 
-    pub fn status_if_matches(&self, loader: Loader, version: Ustr) -> ContentUpdateStatus {
+    pub fn status_if_matches(&self, loader: Loader, version: &'static str) -> ContentUpdateStatus {
         if loader == self.for_loader && version == self.for_version {
             self.status
         } else {
@@ -201,7 +202,7 @@ impl ContentUpdateContext {
         }
     }
 
-    pub fn can_update(&self, loader: Loader, version: Ustr) -> bool {
+    pub fn can_update(&self, loader: Loader, version: &'static str) -> bool {
         self.for_loader == loader && self.for_version == version && self.status.can_update()
     }
 }

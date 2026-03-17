@@ -136,7 +136,7 @@ impl ContentListDelegate {
             }))
         };
 
-        let status = summary.update.status_if_matches(self.for_loader, self.for_version);
+        let status = summary.update.status_if_matches(self.for_loader, self.for_version.as_str());
         let update_button = match status {
             bridge::instance::ContentUpdateStatus::Unknown => None,
             bridge::instance::ContentUpdateStatus::ManualInstall => Some(
@@ -176,7 +176,7 @@ impl ContentListDelegate {
                                 let delegate = this.delegate_mut();
                                 if delegate.is_selected(element_id) {
                                     for summary in &delegate.content {
-                                        if delegate.is_selected(summary.filename_hash) && summary.update.can_update(delegate.for_loader, delegate.for_version) {
+                                        if delegate.is_selected(summary.filename_hash) && summary.update.can_update(delegate.for_loader, delegate.for_version.as_str()) {
                                             updating.insert(summary.filename_hash);
                                             crate::root::update_single_mod(id, summary.id, &backend_handle, window, cx);
                                         }
@@ -198,30 +198,33 @@ impl ContentListDelegate {
 
         let toggle_control = Switch::new(("toggle", element_id))
             .checked(summary.enabled)
-            .on_click(cx.listener(move |this, checked, _, _| {
-                let delegate = this.delegate();
-                if delegate.is_selected(element_id) {
-                    let content_ids = delegate.content.iter().filter_map(|summary| {
-                        if delegate.is_selected(summary.filename_hash) {
-                            Some(summary.id)
-                        } else {
-                            None
-                        }
-                    }).collect();
+            .disabled(!summary.can_toggle)
+            .when(summary.can_toggle, |this| {
+                this.on_click(cx.listener(move |this, checked, _, _| {
+                    let delegate = this.delegate();
+                    if delegate.is_selected(element_id) {
+                        let content_ids = delegate.content.iter().filter_map(|summary| {
+                            if delegate.is_selected(summary.filename_hash) {
+                                Some(summary.id)
+                            } else {
+                                None
+                            }
+                        }).collect();
 
-                    backend_handle.send(MessageToBackend::SetContentEnabled {
-                        id,
-                        content_ids,
-                        enabled: *checked,
-                    });
-                } else {
-                    backend_handle.send(MessageToBackend::SetContentEnabled {
-                        id,
-                        content_ids: vec![content_id],
-                        enabled: *checked,
-                    });
-                }
-            }))
+                        backend_handle.send(MessageToBackend::SetContentEnabled {
+                            id,
+                            content_ids,
+                            enabled: *checked,
+                        });
+                    } else {
+                        backend_handle.send(MessageToBackend::SetContentEnabled {
+                            id,
+                            content_ids: vec![content_id],
+                            enabled: *checked,
+                        });
+                    }
+                }))
+            })
             .px_2();
 
         let controls = if !can_expand {

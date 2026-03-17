@@ -636,58 +636,14 @@ impl Instance {
                     summaries.push(summary);
                 }
             }
-            if check_alternative {
-                alternative_dirty.insert(alternate_path);
-            }
+
+            alternative_dirty.insert(alternate_path);
         }
 
         for old_summary in &*last {
             if !dirty.contains(&old_summary.path) && !alternative_dirty.contains(&*old_summary.path) {
                 if old_summary.path.exists() {
                     summaries.push(old_summary.clone());
-                } else {
-                    // Check if the file has been renamed to .disabled and we haven't been informed yet
-                    // This isn't necessary because we *will* be informed of the rename
-                    // But checking this here will prevent flickering in the UI
-
-                    let mut alternate_path = old_summary.path.to_path_buf();
-                    if old_summary.enabled {
-                        alternate_path.add_extension("disabled");
-                    } else {
-                        alternate_path.set_extension("");
-                    };
-
-                    if alternate_path.exists() {
-                        let enabled = !old_summary.enabled;
-
-                        let Some(filename) = alternate_path.file_name().and_then(|s| s.to_str()) else {
-                            continue;
-                        };
-
-                        let filename_without_disabled = if !enabled {
-                            &filename[..filename.len()-".disabled".len()]
-                        } else {
-                            filename
-                        };
-
-                        let mut hasher = DefaultHasher::new();
-                        filename_without_disabled.hash(&mut hasher);
-                        let filename_hash = hasher.finish();
-
-                        summaries.push(InstanceContentSummary {
-                            content_summary: old_summary.content_summary.clone(),
-                            id: InstanceContentID::dangling(),
-                            lowercase_search_keys: old_summary.lowercase_search_keys.clone(),
-                            filename: filename.into(),
-                            filename_hash,
-                            path: alternate_path.into(),
-                            enabled,
-                            content_source: old_summary.content_source.clone(),
-                            update: old_summary.update.clone(),
-                            disabled_children: old_summary.disabled_children.clone(),
-                        });
-                    }
-
                 }
             }
         }
@@ -877,6 +833,12 @@ impl Instance {
 
 fn create_instance_content_summary(path: &Path, mod_metadata_manager: &Arc<ModMetadataManager>, for_loader: Loader, for_version: Ustr) -> Option<InstanceContentSummary> {
     if !path.is_file() {
+        // Special case for loading a resourcepack folder
+        if let Ok(pack_mcmeta_bytes) = std::fs::read(path.join("pack.mcmeta")) {
+            let pack_png_bytes = std::fs::read(path.join("pack.png")).ok();
+            return try_load_resourcepack_folder(&pack_mcmeta_bytes, pack_png_bytes.as_deref(), path);
+        }
+
         return None;
     }
     let Some(filename) = path.file_name().and_then(|s| s.to_str()) else {
@@ -939,11 +901,51 @@ fn create_instance_content_summary(path: &Path, mod_metadata_manager: &Arc<ModMe
         filename,
         filename_hash,
         path: path.into(),
+        can_toggle: true,
         enabled,
         content_source,
-        update: ContentUpdateContext::new(update_status, for_loader, for_version),
+        update: ContentUpdateContext::new(update_status, for_loader, for_version.as_str()),
         disabled_children: Arc::new(disabled_children),
     })
+}
+
+fn try_load_resourcepack_folder(pack_mcmeta_bytes: &[u8], pack_png_bytes: Option<&[u8]>, path: &Path) -> Option<InstanceContentSummary> {
+    let Some(filename) = path.file_name().and_then(|s| s.to_str()) else {
+        return None;
+    };
+
+    let summary = ModMetadataManager::create_resource_pack(pack_mcmeta_bytes, pack_png_bytes)?;
+
+    let mut hasher = DefaultHasher::new();
+    filename.hash(&mut hasher);
+    let filename_hash = hasher.finish();
+
+    let filename: Arc<str> = filename.into();
+    let lowercase_filename = filename.to_lowercase();
+    let lowercase_filename = if lowercase_filename == &*filename {
+        filename.clone()
+    } else {
+        lowercase_filename.into()
+    };
+
+    let lowercase_search_keys = summary.id.clone().into_iter()
+        .chain(summary.name.clone().into_iter())
+        .chain(std::iter::once(lowercase_filename))
+        .collect();
+
+    return Some(InstanceContentSummary {
+        content_summary: summary,
+        id: InstanceContentID::dangling(),
+        lowercase_search_keys,
+        filename,
+        filename_hash,
+        path: path.into(),
+        can_toggle: false,
+        enabled: true,
+        content_source: schema::content::ContentSource::Manual,
+        update: ContentUpdateContext::new(ContentUpdateStatus::ManualInstall, Loader::Unknown, ""),
+        disabled_children: Default::default(),
+    });
 }
 
 fn read_disabled_children_for(
