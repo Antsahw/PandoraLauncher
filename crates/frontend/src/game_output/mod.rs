@@ -1104,7 +1104,6 @@ impl Render for GameOutputRoot {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             })));
 
-
         v_flex()
             .size_full()
             .border_12()
