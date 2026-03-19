@@ -52,7 +52,7 @@ pub struct Instance {
     pub content_state: enum_map::EnumMap<ContentFolder, ContentFolderState>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstanceStats {
     pub total_playtime_secs: u64,
     pub session_count: u64,

@@ -21,60 +21,7 @@ struct MMCPackComponent {
     version: Arc<str>,
 }
 
-fn try_load_stats_from_multimc(instance_cfg: &Path) -> Option<InstanceStats> {
-    let instance_cfg_str = std::fs::read_to_string(instance_cfg).ok()?;
-
-    let mut stats = InstanceStats::default();
-
-    let mut section = None;
-    for line in instance_cfg_str.split(|v| v == '\n') {
-        let line = line.trim_ascii_start();
-        if line.is_empty() {
-            continue;
-        }
-
-        let start = line.as_bytes()[0];
-        match start {
-            b';' | b'#' => continue,
-            b'[' => {
-                section = Some(line.trim_ascii_end());
-            },
-            _ => {
-                let Some((key, value)) = line.split_once("=") else {
-                    continue;
-                };
-
-
-                let mut value = value.trim_ascii();
-                if value.len() > 1 && value.starts_with('"') && value.ends_with('"') {
-                    value = &value[1..value.len()-1];
-                } else if value.len() > 1 && value.starts_with('\'') && value.ends_with('\'') {
-                    value = &value[1..value.len()-1];
-                }
-
-                match (section, key) {
-                    (Some("[General]"), "totalTimePlayed") => {
-                        let Ok(time_played) = value.parse::<u64>() else {
-                            continue;
-                        };
-                        stats.total_playtime_secs = time_played;
-                    },
-                    (Some("[General]"), "lastLaunchTime") => {
-                        let Ok(last_launcher_time) = value.parse::<i64>() else {
-                            continue;
-                        };
-                        stats.last_played_unix_ms = Some(last_launcher_time);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    Some(stats)
-}
-
-pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<InstanceConfiguration> {
+pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<(InstanceConfiguration, InstanceStats)> {
     let mmc_pack_bytes = std::fs::read(mmc_pack).ok()?;
     let instance_cfg_str = std::fs::read_to_string(instance_cfg).ok()?;
 
@@ -96,6 +43,7 @@ pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<Ins
     }
 
     let mut configuration = InstanceConfiguration::new(minecraft_version?, loader.unwrap_or(Loader::Vanilla));
+    let mut stats = InstanceStats::default();
 
     let mut override_native_workarounds = false;
     let mut override_performance = false;
@@ -233,6 +181,18 @@ pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<Ins
                     },
                     (Some("[General]"), "InstanceAccountId") => {
                         override_account.1 = value.parse::<Uuid>().ok();
+                    },
+                    (Some("[General]"), "totalTimePlayed") => {
+                        let Ok(time_played) = value.parse::<u64>() else {
+                            continue;
+                        };
+                        stats.total_playtime_secs = time_played;
+                    },
+                    (Some("[General]"), "lastLaunchTime") => {
+                        let Ok(last_launcher_time) = value.parse::<i64>() else {
+                            continue;
+                        };
+                        stats.last_played_unix_ms = Some(last_launcher_time);
                     }
                     _ => {}
                 }
@@ -251,7 +211,7 @@ pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<Ins
         configuration.preferred_account = override_account.1;
     }
 
-    Some(configuration)
+    Some((configuration, stats))
 }
 
 #[derive(Deserialize, Debug)]
@@ -491,7 +451,7 @@ fn import_instances_from_multimc(backend: &BackendState, import_job: &ImportFrom
         modal_action.trackers.push(tracker.clone());
         tracker.notify();
 
-        let Some(configuration) = try_load_from_multimc(&to_import.multimc_instance_cfg, &to_import.multimc_mmc_pack) else {
+        let Some((configuration, stats)) = try_load_from_multimc(&to_import.multimc_instance_cfg, &to_import.multimc_mmc_pack) else {
             tracker.set_finished(bridge::modal_action::ProgressTrackerFinishType::Error);
             tracker.notify();
             continue;
@@ -531,8 +491,8 @@ fn import_instances_from_multimc(backend: &BackendState, import_job: &ImportFrom
         let info_path = to_import.pandora_path.join("info_v1.json");
         _ = crate::write_safe(&info_path, &configuration_bytes);
 
-        // Write stats_v1.json if we have stats in the first place.
-        if let Some(stats) = try_load_stats_from_multimc(&to_import.multimc_instance_cfg) {
+        // Write stats_v1.json if we have some stats
+        if stats != InstanceStats::default() {
             let stats_path = to_import.pandora_path.join("stats_v1.json");
             if let Ok(stats_bytes) = serde_json::to_vec(&stats) {
                 _ = crate::write_safe(&stats_path, &stats_bytes);
