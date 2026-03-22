@@ -1,11 +1,11 @@
 use std::{borrow::Cow, io::{BufRead, Read}, sync::Arc, time::{Duration, Instant, SystemTime}};
 
-use auth::{credentials::AccountCredentials, models::MinecraftAccessToken, secret::PlatformSecretStorage};
+use auth::{credentials::AccountCredentials, models::{MinecraftAccessToken}, secret::PlatformSecretStorage};
 use bridge::{
-    install::{ContentDownload, ContentInstall, ContentInstallFile, ContentInstallPath, InstallTarget}, instance::{ContentSummary, ContentType}, keep_alive::KeepAlive, message::{AccountCapesResult, AccountSkinResult, BackendConfigWithPassword, EmbeddedOrRaw, LogFiles, MessageToBackend, MessageToFrontend}, meta::MetadataResult, modal_action::{ModalAction, ModalActionVisitUrl, ProgressTracker, ProgressTrackerFinishType}, safe_path::SafePath, serial::AtomicOptionSerial
+    install::{ContentDownload, ContentInstall, ContentInstallFile, ContentInstallPath, InstallTarget}, instance::{ContentSummary, ContentType}, keep_alive::KeepAlive, message::{AccountCapesResult, AccountSkinResult, BackendConfigWithPassword, LogFiles, MessageToBackend, MessageToFrontend}, meta::MetadataResult, modal_action::{ModalAction, ModalActionVisitUrl, ProgressTracker, ProgressTrackerFinishType}, safe_path::SafePath, serial::AtomicOptionSerial
 };
 use futures::TryFutureExt;
-use schema::{auxiliary::AuxiliaryContentMeta, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeGetFilesRequest, CurseforgeGetModFilesRequest, CurseforgeModLoaderType}, minecraft_profile::{MinecraftProfileResponse, SkinVariant}, modrinth::{ModrinthLoader, ModrinthSideRequirement}, version::{LaunchArgument, LaunchArgumentValue}};
+use schema::{auxiliary::AuxiliaryContentMeta, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeGetFilesRequest, CurseforgeGetModFilesRequest, CurseforgeModLoaderType}, minecraft_profile::MinecraftProfileResponse, modrinth::{ModrinthLoader, ModrinthSideRequirement}, version::{LaunchArgument, LaunchArgumentValue}};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use tokio::{io::AsyncBufReadExt, sync::{Semaphore, TryAcquireError}};
@@ -174,63 +174,6 @@ impl BackendState {
                     });
                 }
             },
-            MessageToBackend::SetInstanceIcon { id, icon } => {
-                let root_path = if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
-                    let root_path = instance.root_path.clone();
-                    instance.configuration.modify(|configuration| {
-                        configuration.instance_fallback_icon = None;
-                        if let Some(EmbeddedOrRaw::Embedded(ref e)) = icon {
-                            configuration.instance_fallback_icon = Some(Ustr::from(e));
-                        }
-                    });
-                    root_path
-                } else {
-                    return;
-                };
-
-                match icon {
-                    Some(EmbeddedOrRaw::Raw(image_bytes)) => {
-                        if let Ok(format) = image::guess_format(&*image_bytes) {
-                            if format == image::ImageFormat::Png {
-                                let icon_path = root_path.join("icon.png");
-                                if let Err(err) = crate::write_safe(&icon_path, &*image_bytes) {
-                                    log::error!("Unable to save instance icon: {:?}", err);
-                                    self.send.send_error("Unable to save instance icon");
-                                    return;
-                                }
-                                if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
-                                    instance.icon = Some(image_bytes);
-                                    self.send.send(instance.create_modify_message());
-                                }
-                            } else {
-                                self.send.send_error("Unable to apply icon: only pngs are supported");
-                            }
-                        } else {
-                            self.send.send_error("Unable to apply icon: unknown format");
-                        }
-                    },
-                    Some(EmbeddedOrRaw::Embedded(_)) => {
-                        let icon_path = root_path.join("icon.png");
-                        if icon_path.exists() {
-                            let _ = std::fs::remove_file(&icon_path);
-                        }
-                        if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
-                            instance.icon = None;
-                            self.send.send(instance.create_modify_message());
-                        }
-                    },
-                    None => {
-                        let icon_path = root_path.join("icon.png");
-                        if icon_path.exists() {
-                            let _ = std::fs::remove_file(&icon_path);
-                        }
-                        if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
-                            instance.icon = None;
-                            self.send.send(instance.create_modify_message());
-                        }
-                    },
-                }
-            },
             MessageToBackend::KillInstance { id } => {
                 let mut instance_state = self.instance_state.write();
                 let Some(instance) = instance_state.instances.get_mut(id) else {
@@ -251,7 +194,6 @@ impl BackendState {
                     }
                 }
 
-                instance.update_session();
                 self.send.send(instance.create_modify_message());
             },
             MessageToBackend::StartInstance {
@@ -283,19 +225,7 @@ impl BackendState {
                     return;
                 };
 
-                scopeguard::defer! {
-                    modal_action.set_finished();
-                    drop(keepalive);
-                    if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
-                        if let Some(launch_keepalive) = &instance.launch_keepalive && !launch_keepalive.is_alive() {
-                            instance.launch_keepalive = None;
-                        }
-                        self.send.send(instance.create_modify_message());
-                    }
-                }
-
                 let Some(login_info) = self.get_login_info(&modal_action, configuration.preferred_account).await else {
-                    modal_action.set_error_message("Unable to log in to Minecraft account".into());
                     return;
                 };
 
@@ -308,6 +238,7 @@ impl BackendState {
                 };
 
                 if modal_action.error.read().is_some() {
+                    modal_action.set_finished();
                     self.send.send(MessageToFrontend::Refresh);
                     return;
                 }
@@ -319,6 +250,9 @@ impl BackendState {
 
                 if matches!(result, Err(LaunchError::CancelledByUser)) {
                     self.send.send(MessageToFrontend::CloseModal);
+                    if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
+                        self.send.send(instance.create_modify_message());
+                    }
                     return;
                 }
 
@@ -327,7 +261,8 @@ impl BackendState {
                     Ok(mut child) => {
                         if !self.config.write().get().dont_open_game_output_when_launching {
                             if let Some(stdout) = child.stdout.take() {
-                                log_reader::start_game_output(stdout, child.stderr.take(), self.send.clone());
+                                let instance_name = self.instance_state.read().instances.get(id).map(|i| i.name.as_str()).unwrap_or("Unknown");
+                                log_reader::start_game_output(stdout, child.stderr.take(), self.send.clone(), instance_name);
                             }
                         }
 
@@ -338,7 +273,6 @@ impl BackendState {
 
                         if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
                             instance.processes.push(child);
-                            instance.update_session();
                         }
                     },
                     Err(ref err) => {
@@ -347,8 +281,15 @@ impl BackendState {
                     },
                 }
 
-                launch_tracker.set_finished(ProgressTrackerFinishType::from_err(is_err));
+                drop(keepalive);
+
+                if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
+                    self.send.send(instance.create_modify_message());
+                }
+
+                launch_tracker.set_finished(if is_err { ProgressTrackerFinishType::Error } else { ProgressTrackerFinishType::Normal });
                 launch_tracker.notify();
+                modal_action.set_finished();
             },
             MessageToBackend::SetContentEnabled { id, content_ids: mod_ids, enabled } => {
                 let mut instance_state = self.instance_state.write();
@@ -1112,8 +1053,8 @@ impl BackendState {
                     }
                 }
             },
-            MessageToBackend::GetImportFromOtherLauncherJob { channel, launcher, path } => {
-                let result = crate::launcher_import::get_import_from_other_launcher_job(launcher, path);
+            MessageToBackend::GetImportFromOtherLauncherPaths { channel } => {
+                let result = crate::launcher_import::discover_instances_from_other_launchers();
                 _ = channel.send(result);
             },
             MessageToBackend::GetSyncState { channel } => {
@@ -1439,8 +1380,8 @@ impl BackendState {
                 }
             },
             MessageToBackend::RelocateInstance { id, path } => {
-                if let Err(err) = std::fs::remove_dir(&path) && err.kind() != std::io::ErrorKind::NotFound {
-                    self.send.send_warning(format!("Cannot relocate instance: {err}"));
+                if path.exists() {
+                    self.send.send_warning("Cannot relocate instance: path already exists");
                     return;
                 }
 
@@ -1474,7 +1415,7 @@ impl BackendState {
 
                     #[cfg(windows)]
                     if let Ok(target) = junction::get_target(&instance.root_path) {
-                        if let Err(err) = crate::rename_with_fallback_across_devices(&target, &path) {
+                        if let Err(err) = std::fs::rename(&target, &path) {
                             log::error!("Unable to move instance files from {target:?} to {path:?}: {err:?}");
                             self.send.send_error(format!("Unable to move instance files: {err}"));
                             return;
@@ -1492,7 +1433,7 @@ impl BackendState {
                     };
 
                     if let Ok(target) = std::fs::read_link(&instance.root_path) {
-                        if let Err(err) = crate::rename_with_fallback_across_devices(&target, &path) {
+                        if let Err(err) = std::fs::rename(&target, &path) {
                             log::error!("Unable to move instance files from {target:?} to {path:?}: {err:?}");
                             self.send.send_error(format!("Unable to move instance files: {err}"));
                             return;
@@ -1520,7 +1461,7 @@ impl BackendState {
                         return;
                     }
 
-                    if let Err(err) = crate::rename_with_fallback_across_devices(&instance.root_path, &path) {
+                    if let Err(err) = std::fs::rename(&instance.root_path, &path) {
                         log::error!("Unable to move instance files: {err:?}");
                         self.send.send_error(format!("Unable to move instance files: {err}"));
                         return;
@@ -1548,8 +1489,8 @@ impl BackendState {
             MessageToBackend::InstallUpdate { update, modal_action } => {
                 tokio::task::spawn(crate::update::install_update(self.redirecting_http_client.clone(), self.directories.clone(), self.send.clone(), update, modal_action));
             },
-            MessageToBackend::ImportFromOtherLauncher { launcher, import_job, modal_action } => {
-                crate::launcher_import::import_from_other_launcher(self, launcher, import_job, modal_action).await;
+            MessageToBackend::ImportFromOtherLauncher { launcher, import_accounts, import_instances, modal_action } => {
+                crate::launcher_import::import_from_other_launcher(self, launcher, import_accounts, import_instances, modal_action).await;
             },
             MessageToBackend::GetAccountSkin { account, result } => {
                 let backend = self.clone();
@@ -1560,9 +1501,9 @@ impl BackendState {
                     };
 
                     if let Some(skin) = account.active_skin() {
-                        SkinManager::frontend_request(&backend, skin.url.clone(), skin.variant, result);
+                        SkinManager::frontend_request(&backend, skin.url.clone(), result);
                     } else {
-                        _ = result.send(AccountSkinResult::Success { skin: None, variant: SkinVariant::Classic });
+                        _ = result.send(AccountSkinResult::Success { skin: None });
                     }
                 });
             },
@@ -1573,7 +1514,7 @@ impl BackendState {
                 };
 
                 let variant_str = match variant {
-                    SkinVariant::Slim => "slim",
+                    schema::minecraft_profile::SkinVariant::Slim => "slim",
                     _ => "classic",
                 };
 

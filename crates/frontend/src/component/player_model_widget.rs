@@ -1,8 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
 use gpui::{prelude::*, *};
-use gpui_component::{Selectable, Sizable, button::Button, h_flex, slider::{Slider, SliderEvent, SliderState}, v_flex};
-use schema::minecraft_profile::SkinVariant;
+use gpui_component::{Sizable, button::Button, h_flex, slider::{Slider, SliderEvent, SliderState}, v_flex};
 
 use crate::{component::player_model::{self, PlayerModel, PlayerModelState}, icon::PandoraIcon};
 
@@ -15,7 +14,6 @@ pub struct PlayerModelWidget {
     animating_pitch_positive: bool,
     animating_pitch: bool,
     animating_animation: bool,
-    variant: SkinVariant,
     last_drag: Option<Point<Pixels>>,
     last_render: Instant,
 }
@@ -32,14 +30,12 @@ impl PlayerModelWidget {
             SliderState::new().min(0.0).max(1.0).step(1.0/800.0).default_value(player_model::DEFAULT_ANIMATION as f32)
         });
 
-        let variant = crate::skin_renderer::determine_skin_variant(&skin).unwrap_or(SkinVariant::Classic);
-
         cx.subscribe(&yaw_slider_state, Self::on_yaw_changed).detach();
         cx.subscribe(&pitch_slider_state, Self::on_pitch_changed).detach();
         cx.subscribe(&animation_slider_state, Self::on_animation_changed).detach();
 
         Self {
-            player_model_state: PlayerModelState::new(cx, skin, variant),
+            player_model_state: PlayerModelState::new(cx, skin),
             yaw_slider_state,
             pitch_slider_state,
             animation_slider_state,
@@ -47,37 +43,22 @@ impl PlayerModelWidget {
             animating_pitch_positive: true,
             animating_pitch: false,
             animating_animation: false,
-            variant,
             last_drag: None,
             last_render: Instant::now(),
         }
     }
 
-    pub fn set_skin(&mut self, cx: &mut App, skin: Arc<[u8]>, variant: SkinVariant) {
-        self.variant = variant;
-        let mut state = self.player_model_state.as_mut(cx);
-        state.skin = skin;
-        state.variant = variant;
+    pub fn set_skin(&mut self, cx: &mut App, skin: Arc<[u8]>) {
+        self.player_model_state.as_mut(cx).skin = skin;
     }
 
     pub fn set_cape(&mut self, cx: &mut App, cape: Option<Arc<[u8]>>) {
         self.player_model_state.as_mut(cx).cape = cape;
     }
 
-    pub fn set_variant(&mut self, cx: &mut App, variant: SkinVariant) {
-        self.variant = variant;
-        self.player_model_state.as_mut(cx).variant = variant;
-    }
-
-    pub fn get_variant(&self) -> SkinVariant {
-        self.variant
-    }
-
-    pub fn set_skin_and_cape(&mut self, cx: &mut App, skin: Arc<[u8]>, variant: SkinVariant, cape: Option<Arc<[u8]>>) {
-        self.variant = variant;
+    pub fn set_skin_and_cape(&mut self, cx: &mut App, skin: Arc<[u8]>, cape: Option<Arc<[u8]>>) {
         let mut state = self.player_model_state.as_mut(cx);
         state.skin = skin;
-        state.variant = variant;
         state.cape = cape;
     }
 
@@ -226,30 +207,6 @@ impl Render for PlayerModelWidget {
                 }))
             )
             .child(v_flex().p_4().w_full()
-                .child(h_flex()
-                    .w_full()
-                    .gap_2()
-                    .pb_2()
-                    .child(Button::new("classic")
-                        .label("Classic")
-                        .flex_1()
-                        .selected(self.variant == SkinVariant::Classic)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.variant = SkinVariant::Classic;
-                            this.player_model_state.update(cx, |state, _| {
-                                state.variant = SkinVariant::Classic;
-                            });
-                        })))
-                    .child(Button::new("slim")
-                        .label("Slim")
-                        .flex_1()
-                        .selected(self.variant == SkinVariant::Slim)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.variant = SkinVariant::Slim;
-                            this.player_model_state.update(cx, |state, _| {
-                                state.variant = SkinVariant::Slim;
-                            });
-                        }))))
                 .child(v_flex()
                     .child(h_flex().text_sm().gap_1()
                         .child(format!("Yaw: {}°", yaw as i32))

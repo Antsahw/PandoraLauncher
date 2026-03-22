@@ -1,6 +1,6 @@
-use std::{path::{Path, PathBuf}, str::FromStr, sync::Arc};
+use std::{path::{Path, PathBuf}, str::FromStr};
 use auth::{credentials::AccountCredentials, models::{TokenWithExpiry, XstsToken}, secret::PlatformSecretStorage};
-use bridge::{import::ImportFromOtherLauncherJob, modal_action::{ModalAction, ProgressTracker}};
+use bridge::modal_action::{ModalAction, ProgressTracker};
 use chrono::DateTime;
 use log::debug;
 use schema::{instance::{InstanceConfiguration, InstanceMemoryConfiguration,  InstanceWrapperCommandConfiguration}, loader::Loader};
@@ -60,7 +60,7 @@ struct Launcher {
     wrapper_command: Option<String>,
     // use_system_glfw: Option<bool>,
     // use_system_open_al: Option<bool>,
-    account: Option<Uuid>,
+
     // quick_play: QuickPlay,
     // is_dev: bool,
     // is_playable: bool,
@@ -230,11 +230,13 @@ struct AtLauncherXstsAuth {
     display_claims: AtLauncherDisplayClaims,
 }
 
+
 #[derive(Debug, Deserialize)]
 // #[serde(rename_all = "case")]
 struct AtLauncherDisplayClaims {
     xui: Vec<AtLauncherDisplayClaim>,
 }
+
 
 #[derive(Debug, Deserialize)]
 // #[serde(rename_all = "case")]
@@ -242,26 +244,30 @@ struct AtLauncherDisplayClaim {
     uhs: String,
 }
 
-pub async fn import_from_atlauncher(backend: &BackendState, import_job: ImportFromOtherLauncherJob, modal_action: ModalAction) {
-    let Ok(launcher_config_bytes) = std::fs::read(import_job.root.join("configs/ATLauncher.json")) else {
+
+
+
+pub async fn import_from_atlauncher(backend: &BackendState, path: &Path, import_accounts: bool, import_instance: bool, modal_action: ModalAction) {
+    let Ok(launcher_config_bytes) = std::fs::read(path.join("configs/ATLauncher.json")) else {
         return;
     };
     let launcher_config = serde_json::from_slice::<AtLauncherConfig>(&launcher_config_bytes).expect("Failed to parse to json");
+    // log::debug!("Launcher config: {}", launcher_config.is_some());
 
-    import_accounts_from_atlauncher(backend, &import_job, &launcher_config, &modal_action).await;
-    import_instances_from_atlauncher(backend, &import_job, &launcher_config, &modal_action);
+    if import_accounts {
+        import_accounts_from_atlauncher(backend, path, &launcher_config, &modal_action).await;
+    }
+    if import_instance {
+        import_instances_from_atlauncher(backend, path, &launcher_config, &modal_action);
+    }
 }
 
-async fn import_accounts_from_atlauncher(backend: &BackendState, import_job: &ImportFromOtherLauncherJob, launcher_config: &AtLauncherConfig, modal_action: &ModalAction) {
-    if !import_job.import_accounts {
-        return;
-    }
-
+async fn import_accounts_from_atlauncher(backend: &BackendState, path: &Path, launcher_config: &AtLauncherConfig, modal_action: &ModalAction) {
     let tracker = ProgressTracker::new("Reading accounts.json".into(), backend.send.clone());
     modal_action.trackers.push(tracker.clone());
     tracker.notify();
 
-    let accounts_path = import_job.root.join("configs/accounts.json");
+    let accounts_path = path.join("configs/accounts.json");
     let Ok(accounts_bytes) = std::fs::read(&accounts_path) else {
         return;
     };
@@ -269,6 +275,7 @@ async fn import_accounts_from_atlauncher(backend: &BackendState, import_job: &Im
     let Ok(accounts_json) = serde_json::from_slice::<Vec<AtLauncherAccount>>(&accounts_bytes) else {
         return;
     };
+    // let accounts_json = serde_json::from_slice::<Vec<AtLauncherAccount>>(&accounts_bytes).expect("Failed to read account file");
 
     let secret_storage = match backend.secret_storage.get_or_init(PlatformSecretStorage::new).await {
         Ok(secret_storage) => secret_storage,
@@ -341,13 +348,13 @@ async fn import_accounts_from_atlauncher(backend: &BackendState, import_job: &Im
 struct AtLauncherInstanceToImport {
     pandora_path: PathBuf,
     config_path: PathBuf,
-    folder: Arc<Path>,
+    folder: PathBuf,
 }
 
 fn try_load_from_atlauncher(config_path: &Path, launcher_config: &AtLauncherConfig) -> anyhow::Result<InstanceConfiguration> {
     // let instance_cfg_bytes = std::fs::read(config_path)?;
-    // let instance_cfg = serde_json::from_slice::<AtLauncherInstance>(&instance_cfg_bytes)?;
-    let instance_cfg_bytes = std::fs::read(config_path).expect("Failed to read from fs");
+     // let instance_cfg = serde_json::from_slice::<AtLauncherInstance>(&instance_cfg_bytes)?;
+     let instance_cfg_bytes = std::fs::read(config_path).expect("Failed to read from fs");
     let instance_cfg = serde_json::from_slice::<AtLauncherInstance>(&instance_cfg_bytes).expect("Failed to convert to json");
 
     // tbh, idk why they have it as `id` they just do...
@@ -372,23 +379,28 @@ fn try_load_from_atlauncher(config_path: &Path, launcher_config: &AtLauncherConf
     }
 
     configuration.preferred_loader_version = instance_cfg.launcher.loader_version.map(|loader_version| loader_version.raw_version.into());
-    configuration.preferred_account = instance_cfg.launcher.account;
 
     Ok(configuration)
 }
 
-fn import_instances_from_atlauncher(backend: &BackendState, import_job: &ImportFromOtherLauncherJob, launcher_config: &AtLauncherConfig, modal_action: &ModalAction) {
-    if import_job.paths.is_empty() {
-        return;
-    }
-
+fn import_instances_from_atlauncher(backend: &BackendState, path: &Path, launcher_config: &AtLauncherConfig, modal_action: &ModalAction) {
     let all_tracker = ProgressTracker::new("Importing instances".into(), backend.send.clone());
     modal_action.trackers.push(all_tracker.clone());
     all_tracker.notify();
 
+    let Ok(read_dir) = std::fs::read_dir(path.join("instances")) else {
+        all_tracker.set_finished(bridge::modal_action::ProgressTrackerFinishType::Error);
+        all_tracker.notify();
+        return;
+    };
+
     let mut to_import = Vec::new();
 
-    for folder in import_job.paths.iter() {
+    for entry in read_dir {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let folder = entry.path();
         if !folder.is_dir() {
             continue;
         }
@@ -412,7 +424,7 @@ fn import_instances_from_atlauncher(backend: &BackendState, import_job: &ImportF
         to_import.push(AtLauncherInstanceToImport {
             pandora_path,
             config_path: atlauncher_instance_cfg,
-            folder: folder.clone(),
+            folder,
         });
     }
 
@@ -427,8 +439,8 @@ fn import_instances_from_atlauncher(backend: &BackendState, import_job: &ImportF
         let Ok(configuration) = try_load_from_atlauncher(&to_import.config_path, launcher_config) else {
             tracker.set_finished(bridge::modal_action::ProgressTrackerFinishType::Error);
             log::error!("Failed to load config path from atlauncher for {:?}", to_import.folder.file_name().unwrap());
-            tracker.notify();
-            continue;
+             tracker.notify();
+              continue;
         };
 
         let Ok(configuration_bytes) = serde_json::to_vec(&configuration) else {
@@ -440,11 +452,13 @@ fn import_instances_from_atlauncher(backend: &BackendState, import_job: &ImportF
         _ = std::fs::create_dir_all(&to_import.pandora_path);
         let target_dot_minecraft = to_import.pandora_path.join(".minecraft");
 
-        _ = std::fs::create_dir_all(&target_dot_minecraft);
-        _ = crate::copy_content_recursive(&to_import.folder, &target_dot_minecraft, false, &|copied, total| {
-            tracker.set_total(total as usize);
-            tracker.set_count(copied as usize);
+        let copy_options = fs_extra::dir::CopyOptions::default().copy_inside(true);
+        _ = fs_extra::dir::copy_with_progress(to_import.folder, &target_dot_minecraft, &copy_options, |state| {
+            tracker.set_total(state.total_bytes as usize);
+            tracker.set_count(state.copied_bytes as usize);
             tracker.notify();
+
+            fs_extra::dir::TransitProcessResult::ContinueOrAbort
         });
 
         // remove old configuration, rename icon path.
@@ -462,7 +476,7 @@ fn import_instances_from_atlauncher(backend: &BackendState, import_job: &ImportF
             _ = std::fs::create_dir(&resourcepacks_path);
 
             for mod_file in disabled_mods_folder{
-                let Ok(entry) = mod_file else {
+                let Ok(entry) = mod_file else{
                     continue;
                 };
 

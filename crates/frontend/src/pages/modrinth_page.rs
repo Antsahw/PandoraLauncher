@@ -139,7 +139,7 @@ impl ModrinthSearchPage {
                     let installed = installed_mods_by_project.entry(project_id.clone()).or_default();
                     installed.push(InstalledMod {
                         mod_id: summary.id,
-                        status: summary.update.status_if_matches(loader, minecraft_version.as_str()),
+                        status: summary.update.status_if_matches(loader, minecraft_version),
                     })
                 }
 
@@ -157,7 +157,7 @@ impl ModrinthSearchPage {
                         let installed = page.installed_mods_by_project.entry(project_id.clone()).or_default();
                         installed.push(InstalledMod {
                             mod_id: summary.id,
-                            status: summary.update.status_if_matches(loader, minecraft_version.as_str()),
+                            status: summary.update.status_if_matches(loader, minecraft_version),
                         })
                     }
                 }).detach();

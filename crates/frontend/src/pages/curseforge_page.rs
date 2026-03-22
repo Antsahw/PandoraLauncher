@@ -133,7 +133,7 @@ impl CurseforgeSearchPage {
                     let installed = installed_mods_by_project.entry(project).or_default();
                     installed.push(InstalledMod {
                         mod_id: summary.id,
-                        status: summary.update.status_if_matches(loader, minecraft_version.as_str()),
+                        status: summary.update.status_if_matches(loader, minecraft_version),
                     })
                 }
 
@@ -151,7 +151,7 @@ impl CurseforgeSearchPage {
                         let installed = page.installed_mods_by_project.entry(project).or_default();
                         installed.push(InstalledMod {
                             mod_id: summary.id,
-                            status: summary.update.status_if_matches(loader, minecraft_version.as_str()),
+                            status: summary.update.status_if_matches(loader, minecraft_version),
                         })
                     }
                 }).detach();

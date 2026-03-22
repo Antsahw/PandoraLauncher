@@ -335,11 +335,6 @@ impl BackendState {
                     } else {
                         self.load_instance_from_path(parent_path, true, true);
                     }
-                } else if file_name == "stats_v1.json" {
-                    if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
-                        instance.stats.mark_changed(&path);
-                        self.send.send(instance.create_modify_message());
-                    }
                 } else if file_name == ".minecraft"
                     && let Some(instance) = self.instance_state.write().instances.get_mut(id)
                 {

@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 use schema::minecraft_profile::{SkinState, SkinVariant};
 use uuid::Uuid;
 use crate::{
-    component::{player_model_widget::PlayerModelWidget, shrinking_text::ShrinkingText}, data_asset_loader::DataAssetLoader, entity::{DataEntities, account::AccountExt}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::page::Page, png_render_cache::ImageTransformation, ts
+    component::player_model_widget::PlayerModelWidget, data_asset_loader::DataAssetLoader, entity::DataEntities, icon::PandoraIcon, pages::page::Page, png_render_cache::ImageTransformation, ts
 };
 
 pub struct SkinsPage {
@@ -60,10 +60,10 @@ impl SkinsPage {
         !self.has_pending_login()
     }
 
-    fn select_skin(&mut self, skin: Arc<[u8]>, variant: SkinVariant, cx: &mut Context<Self>) {
+    fn select_skin(&mut self, skin: Arc<[u8]>, cx: &mut Context<Self>) {
         self.selected_skin = skin.clone();
         self.player_model_widget.update(cx, |widget, cx| {
-            widget.set_skin(cx, skin, variant);
+            widget.set_skin(cx, skin);
         });
     }
 
@@ -100,12 +100,10 @@ impl SkinsPage {
 
             let _ = page.update(cx, move |page, cx| {
                 // Handle skin result
-                let mut new_skin = None;
                 if let Ok(skin_result) = skin_result {
-                    if let AccountSkinResult::Success { skin, variant } = &skin_result {
+                    if let AccountSkinResult::Success { skin } = &skin_result {
                         if let Some(skin) = skin.clone() {
-                            page.selected_skin = skin.clone();
-                            new_skin = Some((skin, *variant));
+                            page.selected_skin = skin;
                         }
                     }
                     page.account_skins.insert(uuid, skin_result);
@@ -131,11 +129,7 @@ impl SkinsPage {
 
                 // Update model widget
                 page.player_model_widget.update(cx, |widget, cx| {
-                    if let Some((skin, variant)) = new_skin {
-                        widget.set_skin_and_cape(cx, skin, variant, None);
-                    } else {
-                        widget.set_cape(cx, None);
-                    }
+                    widget.set_skin_and_cape(cx, page.selected_skin.clone(), None);
                 });
                 page.applying_to_account = None;
                 page.request_account_skin = None;
@@ -191,18 +185,16 @@ impl Render for SkinsPage {
             .items_start();
 
         let mut active_skin = None;
-        let mut active_skin_variant = None;
         let controls;
 
         if let Some(account) = &self.data.accounts.read(cx).selected_account {
             let uuid = account.uuid;
-            let username = account.username(InterfaceConfig::get(cx).hide_usernames);
+            let username = account.username.clone();
             if account.offline {
                 controls = ts!("skins.no_offline").into_any_element();
             } else if self.applying_to_account == Some(uuid) {
-                if let Some(AccountSkinResult::Success { skin, variant }) = self.account_skins.get(&uuid) {
+                if let Some(AccountSkinResult::Success { skin }) = self.account_skins.get(&uuid) {
                     active_skin = skin.clone();
-                    active_skin_variant = Some(*variant);
                 }
 
                 controls = h_flex()
@@ -219,14 +211,11 @@ impl Render for SkinsPage {
                     .into_any_element();
             } else {
                 match self.account_skins.get(&uuid) {
-                    Some(AccountSkinResult::Success { skin, variant }) => {
+                    Some(AccountSkinResult::Success { skin }) => {
                         active_skin = skin.clone();
-                        active_skin_variant = Some(*variant);
-                        let selected_variant = self.player_model_widget.read(cx).get_variant();
                         let can_apply_changes = if let Some(skin) = skin {
-                            !Arc::ptr_eq(skin, &self.selected_skin)
-                                || *variant != selected_variant
-                                || self.active_cape != self.selected_cape
+                            !Arc::ptr_eq(skin, &self.selected_skin) ||
+                                self.active_cape != self.selected_cape
                         } else {
                             self.active_cape != self.selected_cape
                         };
@@ -237,7 +226,6 @@ impl Render for SkinsPage {
                                 .disabled(!can_apply_changes)
                                 .on_click({
                                     let skin = skin.clone();
-                                    let variant = *variant;
                                     cx.listener(move |page, _, _, cx| {
                                         if let Some((cape_id, cape_url)) = &page.active_cape {
                                             page.select_cape(*cape_id, cape_url.clone());
@@ -246,7 +234,7 @@ impl Render for SkinsPage {
                                         }
 
                                         if let Some(skin) = skin.clone() {
-                                            page.select_skin(skin, variant, cx);
+                                            page.select_skin(skin, cx);
                                         }
                                         cx.notify();
                                     })
@@ -260,10 +248,16 @@ impl Render for SkinsPage {
                                     let skin = skin.clone();
                                     cx.listener(move |page, _, _, cx| {
                                         if let Some(skin) = &skin && !Arc::ptr_eq(&skin, &page.selected_skin) {
+                                            let is_slim = crate::skin_renderer::is_slim(&page.selected_skin).unwrap_or(false);
+                                            let variant = if is_slim {
+                                                SkinVariant::Slim
+                                            } else {
+                                                SkinVariant::Classic
+                                            };
                                             page.data.backend_handle.send(MessageToBackend::SetAccountSkin {
                                                 account: uuid,
                                                 skin: page.selected_skin.clone(),
-                                                variant: selected_variant
+                                                variant
                                             });
                                         }
                                         if page.active_cape != page.selected_cape {
@@ -313,91 +307,71 @@ impl Render for SkinsPage {
 
             if let Some(AccountCapesResult::Success { capes }) = self.account_capes.get(&uuid) {
                 if !capes.is_empty() {
-                    if InterfaceConfig::get(cx).collapse_capes_in_skins_page {
-                        library = library
-                            .child(h_flex()
-                                .id("toggle-capes")
-                                .child(ts!("skins.capes"))
-                                .child(PandoraIcon::ChevronLeft)
-                                .on_click(|_, _, cx| {
-                                    InterfaceConfig::get_mut(cx).collapse_capes_in_skins_page = false;
-                                })
-                            )
-                    } else {
-                        const TRANSFORM: ImageTransformation = ImageTransformation::CropAndScale {
-                            min_x: 1,
-                            min_y: 1,
-                            width: 10,
-                            height: 16,
-                            scale: 5
+                    const TRANSFORM: ImageTransformation = ImageTransformation::CropAndScale {
+                        min_x: 1,
+                        min_y: 1,
+                        width: 10,
+                        height: 16,
+                        scale: 5
+                    };
+
+                    let cape_buttons = capes.iter().enumerate().map(|(i, cape)| {
+                        let selected = self.selected_cape.as_ref().map(|(id, _)| *id) == Some(cape.id);
+                        let active = self.active_cape.as_ref().map(|(id, _)| *id) == Some(cape.id);
+                        let padding = if selected {
+                            px(7.0)
+                        } else {
+                            px(8.0)
                         };
-
-                        let cape_buttons = capes.iter().enumerate().map(|(i, cape)| {
-                            let selected = self.selected_cape.as_ref().map(|(id, _)| *id) == Some(cape.id);
-                            let active = self.active_cape.as_ref().map(|(id, _)| *id) == Some(cape.id);
-                            let padding = if selected {
-                                px(7.0)
-                            } else {
-                                px(8.0)
-                            };
-                            let button = v_flex()
-                                .gap_1()
-                                .size(px(144.0))
-                                .min_size(px(144.0))
-                                .max_size(px(144.0))
-                                .text_base()
-                                .id(("select-cape", i))
-                                .rounded(radius)
-                                .items_center()
-                                .justify_center()
-                                .p(padding)
-                                .when_else(selected, |this| {
-                                    this.bg(list_active)
-                                        .pt_0()
-                                        .border_1()
-                                        .border_color(list_active_border)
-                                }, |this| {
-                                    this.bg(secondary)
-                                        .pt_px()
-                                        .hover(|style| style.bg(secondary_hover))
+                        let button = v_flex()
+                            .gap_1()
+                            .min_size(px(144.0))
+                            .text_base()
+                            .id(("select-cape", i))
+                            .rounded(radius)
+                            .items_center()
+                            .justify_center()
+                            .p(padding)
+                            .when_else(selected, |this| {
+                                this.bg(list_active)
+                                    .pt_0()
+                                    .border_1()
+                                    .border_color(list_active_border)
+                            }, |this| {
+                                this.bg(secondary)
+                                    .pt_px()
+                                    .hover(|style| style.bg(secondary_hover))
+                            })
+                            .when(active, |this| {
+                                this.child(Icon::new(PandoraIcon::Flag).absolute().right(padding).bottom(padding))
+                            })
+                            .child(SharedString::new(cape.alias.clone()))
+                            .on_click({
+                                let cape_url = cape.url.clone();
+                                let uuid = cape.id;
+                                cx.listener(move |page, _, _, cx| {
+                                    if page.selected_cape.as_ref().map(|(id, _)| *id) == Some(uuid) {
+                                        page.select_no_cape(cx);
+                                    } else {
+                                        page.select_cape(uuid, cape_url.clone());
+                                    }
+                                    cx.notify();
                                 })
-                                .when(active, |this| {
-                                    this.child(Icon::new(PandoraIcon::Flag).absolute().right(padding).bottom(padding))
-                                })
-                                .child(ShrinkingText::new(cape.alias.clone().into()))
-                                .on_click({
-                                    let cape_url = cape.url.clone();
-                                    let uuid = cape.id;
-                                    cx.listener(move |page, _, _, cx| {
-                                        if page.selected_cape.as_ref().map(|(id, _)| *id) == Some(uuid) {
-                                            page.select_no_cape(cx);
-                                        } else {
-                                            page.select_cape(uuid, cape_url.clone());
-                                        }
-                                        cx.notify();
-                                    })
-                                });
+                            });
 
-                            let uri: SharedUri = SharedString::new(cape.url.clone()).into();
-                            let bytes = cx.fetch_asset::<DataAssetLoader>(&Resource::Uri(uri)).0.now_or_never().flatten();
-                            if let Some(bytes) = bytes {
-                                let cape_img = crate::png_render_cache::render_with_transform(bytes, TRANSFORM,  cx);
-                                button.child(cape_img)
-                            } else {
-                                button.child(Skeleton::new().w(px(50.0)).h(px(80.0)).bg(secondary_skeleton))
-                            }
-                        });
+                        let uri: SharedUri = SharedString::new(cape.url.clone()).into();
+                        let bytes = cx.fetch_asset::<DataAssetLoader>(&Resource::Uri(uri)).0.now_or_never().flatten();
+                        if let Some(bytes) = bytes {
+                            let cape_img = crate::png_render_cache::render_with_transform(bytes, TRANSFORM,  cx);
+                            button.child(cape_img)
+                        } else {
+                            button.child(Skeleton::new().w(px(50.0)).h(px(80.0)).bg(secondary_skeleton))
+                        }
+                    });
 
-                        library = library
-                            .child(h_flex()
-                                .id("toggle-capes")
-                                .child(ts!("skins.capes"))
-                                .child(PandoraIcon::ChevronDown)
-                                .on_click(|_, _, cx| {
-                                    InterfaceConfig::get_mut(cx).collapse_capes_in_skins_page = true;
-                                }))
-                            .child(h_flex().w_full().mb_4().gap_2().flex_wrap().children(cape_buttons))
-                    }
+                    library = library
+                        .child(ts!("skins.capes"))
+                        .child(h_flex().w_full().mb_4().gap_2().flex_wrap().children(cape_buttons))
                 }
             }
         } else {
@@ -539,12 +513,7 @@ impl Render for SkinsPage {
                     .on_click({
                         let skin = skin.clone();
                         cx.listener(move |page, _, _, cx| {
-                            let variant = if active && let Some(active_skin_variant) = active_skin_variant {
-                                active_skin_variant
-                            } else {
-                                crate::skin_renderer::determine_skin_variant(&skin).unwrap_or(SkinVariant::Classic)
-                            };
-                            page.select_skin(skin.clone(), variant, cx);
+                            page.select_skin(skin.clone(), cx);
                         })
                     }))
             })));

@@ -22,6 +22,8 @@ pub struct InterfaceConfig {
     #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub main_window_bounds: WindowBounds,
     #[serde(default, deserialize_with = "schema::try_deserialize")]
+    pub game_output_bounds: WindowBounds,
+    #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub sidebar_width: f32,
     #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub main_page: PageType,
@@ -44,8 +46,6 @@ pub struct InterfaceConfig {
     #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub quit_on_main_closed: bool,
     #[serde(default, deserialize_with = "schema::try_deserialize")]
-    pub hide_usernames: bool,
-    #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub hide_server_addresses: bool,
     #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub show_snapshots_in_create_instance: bool,
@@ -53,8 +53,6 @@ pub struct InterfaceConfig {
     pub instances_view_mode: InstancesViewMode,
     #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub instance_subpage: InstanceSubpageType,
-    #[serde(default, deserialize_with = "schema::try_deserialize")]
-    pub collapse_capes_in_skins_page: bool,
 }
 
 fn default_modrinth_project_type() -> ModrinthProjectType {
@@ -70,6 +68,7 @@ impl Default for InterfaceConfig {
         Self {
             active_theme: Default::default(),
             main_window_bounds: Default::default(),
+            game_output_bounds: Default::default(),
             sidebar_width: Default::default(),
             main_page: Default::default(),
             page_path: Default::default(),
@@ -79,14 +78,12 @@ impl Default for InterfaceConfig {
             content_filter_version: Default::default(),
             modrinth_page_project_type: default_modrinth_project_type(),
             curseforge_page_class_id: default_curseforge_class_id(),
-            hide_main_window_on_launch: false,
-            quit_on_main_closed: false,
-            hide_server_addresses: false,
-            hide_usernames: false,
+            hide_main_window_on_launch: Default::default(),
+            quit_on_main_closed: Default::default(),
+            hide_server_addresses: Default::default(),
             show_snapshots_in_create_instance: Default::default(),
             instances_view_mode: Default::default(),
-            instance_subpage: Default::default(),
-            collapse_capes_in_skins_page: false,
+            instance_subpage: Default::default()
         }
     }
 }

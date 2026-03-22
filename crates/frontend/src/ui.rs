@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 use bridge::{instance::InstanceID, message::MessageToBackend};
 use gpui::{prelude::*, *};
@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     component::{menu::{MenuGroup, MenuGroupItem}, page_path::PagePath, resize_panel::{ResizePanel, ResizePanelState}, shrinking_text::ShrinkingText, title_bar::TitleBar}, entity::{
-        DataEntities, account::AccountExt, instance::{InstanceAddedEvent, InstanceEntries, InstanceModifiedEvent, InstanceMovedToTopEvent, InstanceRemovedEvent}
+        DataEntities, instance::{InstanceAddedEvent, InstanceEntries, InstanceModifiedEvent, InstanceMovedToTopEvent, InstanceRemovedEvent}
     }, icon::PandoraIcon, interface_config::InterfaceConfig, modals, pages::{curseforge_page::CurseforgeSearchPage, import::ImportPage, instance::instance_page::InstancePage, instances_page::InstancesPage, modrinth_page::ModrinthSearchPage, modrinth_project_page::ModrinthProjectPage, page::Page, skins_page::SkinsPage, syncing_page::SyncingPage}, png_render_cache, ts
 };
 
@@ -23,8 +23,6 @@ pub struct LauncherUI {
     pub update: Option<UpdatePrompt>,
     sidebar_state: ResizePanelState,
     recent_instances: heapless::Vec<(InstanceID, SharedString), 3>,
-    page_history_backwards: VecDeque<(PageType, Arc<[PageType]>)>,
-    page_history_forwards: Vec<(PageType, Arc<[PageType]>)>,
     previous_pages: FxHashMap<PageType, LauncherPage>,
     _instance_added_subscription: Subscription,
     _instance_modified_subscription: Subscription,
@@ -232,8 +230,6 @@ impl LauncherUI {
             update: None,
             sidebar_state,
             recent_instances,
-            page_history_backwards: VecDeque::with_capacity(32),
-            page_history_forwards: Vec::new(),
             previous_pages: FxHashMap::default(),
             _instance_added_subscription,
             _instance_modified_subscription,
@@ -294,32 +290,18 @@ impl LauncherUI {
     }
 
     pub fn switch_page(&mut self, page: PageType, page_path: &[PageType], window: &mut Window, cx: &mut Context<Self>) {
-        let page_path: Arc<[PageType]> = page_path.into();
-
-        let config = InterfaceConfig::get(cx);
-        if config.main_page == page {
+        if InterfaceConfig::get(cx).main_page == page {
             return;
         }
 
-        self.page_history_forwards.clear();
-        if self.page_history_backwards.len() >= 32 {
-            self.page_history_backwards.pop_back();
-        }
-        self.page_history_backwards.push_front((config.main_page.clone(), config.page_path.clone()));
-
-        self.switch_page_without_history(page, page_path, window, cx);
-    }
-
-    fn switch_page_without_history(&mut self, page: PageType, page_path: Arc<[PageType]>, window: &mut Window, cx: &mut Context<Self>) {
         let config = InterfaceConfig::get_mut(cx);
         let previous_page_type = std::mem::replace(&mut config.main_page, page.clone());
         config.main_page = page.clone();
-        config.page_path = page_path.clone();
+        config.page_path = page_path.into();
 
         if let Some(previous_page) = self.previous_pages.remove(&page) {
             self.page = previous_page;
             self.previous_pages.retain(|k, _| page_path.contains(k));
-            cx.notify();
             return;
         }
 
@@ -341,28 +323,6 @@ impl LauncherUI {
         }
 
         cx.notify();
-    }
-
-    pub fn nav_backwards(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((page, page_path)) = self.page_history_backwards.pop_front() else {
-            return;
-        };
-
-        let config = InterfaceConfig::get(cx);
-        self.page_history_forwards.push((config.main_page.clone(), config.page_path.clone()));
-
-        self.switch_page_without_history(page, page_path, window, cx);
-    }
-
-    pub fn nav_forwards(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((page, page_path)) = self.page_history_forwards.pop() else {
-            return;
-        };
-
-        let config = InterfaceConfig::get(cx);
-        self.page_history_backwards.push_front((config.main_page.clone(), config.page_path.clone()));
-
-        self.switch_page_without_history(page, page_path, window, cx);
     }
 }
 
@@ -431,7 +391,7 @@ impl Render for LauncherUI {
 
         let accounts = self.data.accounts.read(cx);
         let (account_head, account_name) = if let Some(account) = &accounts.selected_account {
-            let account_name = account.username(InterfaceConfig::get(cx).hide_usernames);
+            let account_name = SharedString::new(account.username.clone());
             let head = if let Some(head) = &account.head {
                 let resize = png_render_cache::ImageTransformation::Resize { width: 32, height: 32 };
                 png_render_cache::render_with_transform(Arc::clone(head), resize, cx)
@@ -486,7 +446,7 @@ impl Render for LauncherUI {
                             } else {
                                 gpui::img(ImageSource::Resource(Resource::Embedded("images/default_head.png".into())))
                             };
-                            let account_name = account.username(InterfaceConfig::get(cx).hide_usernames);
+                            let account_name = SharedString::new(account.username.clone());
 
                             let selected = Some(account.uuid) == selected_account;
 
@@ -527,7 +487,6 @@ impl Render for LauncherUI {
                         });
 
                         sheet
-                            .when(cfg!(target_os = "macos"), |this| this.pt_5())
                             .title(ts!("account.title"))
                             .child(v_flex()
                                 .gap_2()

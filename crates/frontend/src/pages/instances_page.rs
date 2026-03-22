@@ -60,9 +60,7 @@ impl Page for InstancesPage {
                 crate::modals::create_instance::open_create_instance(this.metadata.clone(), this.instances.clone(),
                     this.backend_handle.clone(), window, cx);
             }));
-        // wrapping in div makes it not take up the full space of the titlebar
-        let select_view = div()
-            .child(Select::new(&self.view_dropdown).title_prefix(format!("{}: ", ts!("instance.view"))));
+        let select_view = Select::new(&self.view_dropdown).title_prefix(format!("{}: ", ts!("instance.view")));
 
         h_flex().gap_3().child(create_instance).child(select_view)
     }

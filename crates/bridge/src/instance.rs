@@ -1,8 +1,9 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 
 use indexmap::IndexMap;
 use once_cell::sync::Lazy;
-use schema::{auxiliary::AuxDisabledChildren, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeModpackFile, CurseforgeModpackMinecraft}, loader::Loader, modification::ModrinthModpackFileDownload, server_status::ServerStatus, text_component::FlatTextComponent};
+use schema::{auxiliary::AuxDisabledChildren, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeModpackFile, CurseforgeModpackMinecraft}, loader::Loader, modification::ModrinthModpackFileDownload, text_component::FlatTextComponent};
+use ustr::Ustr;
 
 use crate::safe_path::SafePath;
 
@@ -43,13 +44,6 @@ pub enum InstanceStatus {
     Running,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct InstancePlaytime {
-    pub total_secs: u64,
-    pub current_session_secs: u64,
-    pub last_played_unix_ms: Option<i64>,
-}
-
 #[derive(Debug, Clone)]
 pub struct InstanceWorldSummary {
     pub title: Arc<str>,
@@ -64,9 +58,6 @@ pub struct InstanceServerSummary {
     pub name: Arc<str>,
     pub ip: Arc<str>,
     pub png_icon: Option<Arc<[u8]>>,
-    pub pinging: bool,
-    pub status: Option<Arc<ServerStatus>>,
-    pub ping: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +68,6 @@ pub struct InstanceContentSummary {
     pub lowercase_search_keys: Arc<[Arc<str>]>,
     pub filename_hash: u64,
     pub path: Arc<Path>,
-    pub can_toggle: bool,
     pub enabled: bool,
     pub content_source: ContentSource,
     pub update: ContentUpdateContext,
@@ -195,15 +185,15 @@ impl ContentUpdateStatus {
 pub struct ContentUpdateContext {
     status: ContentUpdateStatus,
     for_loader: Loader,
-    for_version: &'static str,
+    for_version: Ustr,
 }
 
 impl ContentUpdateContext {
-    pub fn new(status: ContentUpdateStatus, for_loader: Loader, for_version: &'static str) -> Self {
+    pub fn new(status: ContentUpdateStatus, for_loader: Loader, for_version: Ustr) -> Self {
         Self { status, for_loader, for_version }
     }
 
-    pub fn status_if_matches(&self, loader: Loader, version: &'static str) -> ContentUpdateStatus {
+    pub fn status_if_matches(&self, loader: Loader, version: Ustr) -> ContentUpdateStatus {
         if loader == self.for_loader && version == self.for_version {
             self.status
         } else {
@@ -211,7 +201,7 @@ impl ContentUpdateContext {
         }
     }
 
-    pub fn can_update(&self, loader: Loader, version: &'static str) -> bool {
+    pub fn can_update(&self, loader: Loader, version: Ustr) -> bool {
         self.for_loader == loader && self.for_version == version && self.status.can_update()
     }
 }

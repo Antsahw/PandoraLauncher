@@ -3,8 +3,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
-use crate::loader::Loader;
-
 pub const CURSEFORGE_SEARCH_URL: &str = "https://api.curseforge.com/v1/mods/search";
 pub const MINECRAFT_GAME_ID: u32 = 432;
 
@@ -263,25 +261,6 @@ pub struct CurseforgeModpackMinecraft {
     pub version: Option<Arc<str>>,
     pub mod_loaders: Arc<[CurseforgeModpackModLoader]>,
     pub recommended_ram: Option<u32>,
-}
-
-impl CurseforgeModpackMinecraft {
-    pub fn get_loader(&self) -> Option<Loader> {
-        self.mod_loaders.iter()
-            .find(|loader| loader.primary)
-            .or_else(|| self.mod_loaders.first())
-            .and_then(|loader| {
-                if loader.id.starts_with("forge-") {
-                    Some(Loader::Forge)
-                } else if loader.id.starts_with("neoforge-") {
-                    Some(Loader::NeoForge)
-                } else if loader.id.starts_with("fabric-") {
-                    Some(Loader::Fabric)
-                } else {
-                    None
-                }
-            })
-    }
 }
 
 #[derive(Deserialize, Debug)]

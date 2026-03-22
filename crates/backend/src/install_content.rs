@@ -973,7 +973,20 @@ fn determine_loader_from_content(content: &[InstallFromContentLibrary]) -> Optio
                 }
             },
             ContentType::CurseforgeModpack { minecraft, .. } => {
-                return minecraft.get_loader();
+                return minecraft.mod_loaders.iter()
+                    .find(|loader| loader.primary)
+                    .or_else(|| minecraft.mod_loaders.first())
+                    .and_then(|loader| {
+                        if loader.id.starts_with("forge-") {
+                            Some(Loader::Forge)
+                        } else if loader.id.starts_with("neoforge-") {
+                            Some(Loader::NeoForge)
+                        } else if loader.id.starts_with("fabric-") {
+                            Some(Loader::Fabric)
+                        } else {
+                            None
+                        }
+                    });
             },
             ContentType::ResourcePack => {},
         }

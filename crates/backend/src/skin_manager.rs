@@ -4,7 +4,6 @@ use bridge::message::{AccountSkinResult, BridgeDataLoadState, MessageToFrontend,
 use image::DynamicImage;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
-use schema::minecraft_profile::SkinVariant;
 use tokio::sync::oneshot::Sender;
 use uuid::Uuid;
 
@@ -35,7 +34,7 @@ impl Default for SkinManager {
 enum SkinEntry {
     Loading {
         accounts: Vec<Uuid>,
-        frontend_requests: Vec<(SkinVariant, Sender<AccountSkinResult>)>,
+        frontend_requests: Vec<Sender<AccountSkinResult>>,
     },
     Loaded {
         skin: Arc<[u8]>,
@@ -58,7 +57,6 @@ impl SkinManager {
     pub fn frontend_request(
         backend: &BackendState,
         skin_url: Arc<str>,
-        skin_variant: SkinVariant,
         send: Sender<AccountSkinResult>
     ) {
         {
@@ -66,24 +64,18 @@ impl SkinManager {
             if let Some(existing) = skin_manager.skins_download.get_mut(&skin_url) {
                 match existing {
                     SkinEntry::Loading { frontend_requests, .. } => {
-                        frontend_requests.push((skin_variant, send));
+                        frontend_requests.push(send);
                     },
                     SkinEntry::Loaded { skin, .. } => {
                         let skin = skin.clone();
                         drop(skin_manager);
-                        _ = send.send(AccountSkinResult::Success {
-                            skin: Some(skin),
-                            variant: skin_variant,
-                        });
+                        _ = send.send(AccountSkinResult::Success { skin: Some(skin) });
                     },
                     SkinEntry::Failed => {}
                 }
                 return;
             }
-            skin_manager.skins_download.insert(skin_url.clone(), SkinEntry::Loading {
-                accounts: Vec::new(),
-                frontend_requests: vec![(skin_variant, send)]
-            });
+            skin_manager.skins_download.insert(skin_url.clone(), SkinEntry::Loading { accounts: Vec::new(), frontend_requests: vec![send] });
         }
 
         Self::download_skin(backend, skin_url);
@@ -127,8 +119,8 @@ impl SkinManager {
         let previous = skin_manager.write().skins_download.insert(skin_url, SkinEntry::Failed);
 
         if let Some(SkinEntry::Loading { frontend_requests, .. }) = previous {
-            for (_, frontend_request) in frontend_requests {
-                _ = frontend_request.send(AccountSkinResult::UnableToLoadSkin);
+            for fronend_request in frontend_requests {
+                _ = fronend_request.send(AccountSkinResult::UnableToLoadSkin);
             }
         }
     }
@@ -196,11 +188,8 @@ impl SkinManager {
                 return;
             };
 
-            for (variant, frontend_request) in frontend_requests {
-                _ = frontend_request.send(AccountSkinResult::Success {
-                    skin: Some(skin.clone()),
-                    variant,
-                });
+            for frontend_request in frontend_requests {
+                _ = frontend_request.send(AccountSkinResult::Success { skin: Some(skin.clone()) });
             }
 
             if accounts.is_empty() {

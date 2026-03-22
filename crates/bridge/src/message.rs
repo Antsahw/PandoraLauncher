@@ -12,8 +12,8 @@ use ustr::Ustr;
 use uuid::Uuid;
 
 use crate::{
-    account::Account, game_output::GameOutputLogLevel, import::{ImportFromOtherLauncherJob, OtherLauncher}, install::ContentInstall, instance::{
-        InstanceContentID, InstanceContentSummary, InstanceID, InstancePlaytime, InstanceServerSummary, InstanceStatus,
+    account::Account, game_output::GameOutputLogLevel, import::{ImportFromOtherLaunchers, OtherLauncher}, install::ContentInstall, instance::{
+        InstanceContentID, InstanceContentSummary, InstanceID, InstanceServerSummary, InstanceStatus,
         InstanceWorldSummary,
     }, keep_alive::{KeepAlive, KeepAliveHandle}, meta::{MetadataRequest, MetadataResult}, modal_action::ModalAction
 };
@@ -87,10 +87,6 @@ pub enum MessageToBackend {
         id: InstanceID,
         system_libraries: InstanceSystemLibrariesConfiguration,
     },
-    SetInstanceIcon {
-        id: InstanceID,
-        icon: Option<EmbeddedOrRaw>,
-    },
     KillInstance {
         id: InstanceID,
     },
@@ -156,10 +152,8 @@ pub enum MessageToBackend {
         instance: InstanceID,
         channel: tokio::sync::oneshot::Sender<LogFiles>,
     },
-    GetImportFromOtherLauncherJob {
-        channel: tokio::sync::oneshot::Sender<Option<ImportFromOtherLauncherJob>>,
-        launcher: OtherLauncher,
-        path: Arc<Path>,
+    GetImportFromOtherLauncherPaths {
+        channel: tokio::sync::oneshot::Sender<ImportFromOtherLaunchers>,
     },
     GetSyncState {
         channel: tokio::sync::oneshot::Sender<SyncState>,
@@ -213,7 +207,8 @@ pub enum MessageToBackend {
     },
     ImportFromOtherLauncher {
         launcher: OtherLauncher,
-        import_job: ImportFromOtherLauncherJob,
+        import_accounts: bool,
+        import_instances: bool,
         modal_action: ModalAction,
     },
     GetAccountSkin {
@@ -252,7 +247,6 @@ pub enum MessageToFrontend {
         root_path: Arc<Path>,
         dot_minecraft_folder: Arc<Path>,
         configuration: InstanceConfiguration,
-        playtime: InstancePlaytime,
         worlds_state: BridgeDataLoadState,
         servers_state: BridgeDataLoadState,
         mods_state: BridgeDataLoadState,
@@ -268,12 +262,7 @@ pub enum MessageToFrontend {
         root_path: Arc<Path>,
         dot_minecraft_folder: Arc<Path>,
         configuration: InstanceConfiguration,
-        playtime: InstancePlaytime,
         status: InstanceStatus,
-    },
-    InstancePlaytimeUpdated {
-        id: InstanceID,
-        playtime: InstancePlaytime,
     },
     InstanceWorldsUpdated {
         id: InstanceID,
@@ -293,6 +282,7 @@ pub enum MessageToFrontend {
     },
     CreateGameOutputWindow {
         id: usize,
+        name: String,
         keep_alive: KeepAlive,
     },
     AddGameOutput {
@@ -411,12 +401,10 @@ pub enum EmbeddedOrRaw {
     Raw(Arc<[u8]>),
 }
 
-
 #[derive(Debug, Clone)]
 pub enum AccountSkinResult {
     Success {
         skin: Option<Arc<[u8]>>,
-        variant: SkinVariant,
     },
     NeedsLogin,
     UnableToLoadSkin,

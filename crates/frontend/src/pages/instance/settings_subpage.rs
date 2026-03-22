@@ -1,11 +1,11 @@
 use std::{path::Path, sync::Arc};
 
 use bridge::{
-    handle::BackendHandle, instance::InstanceID, message::{EmbeddedOrRaw, MessageToBackend}, meta::MetadataRequest
+    handle::BackendHandle, instance::InstanceID, message::MessageToBackend, meta::MetadataRequest
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme as _, Disableable, Icon, IndexPath, Sizable, WindowExt, button::{Button, ButtonVariants}, checkbox::Checkbox, h_flex, input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent}, notification::{Notification, NotificationType}, select::{SearchableVec, Select, SelectEvent, SelectState}, skeleton::Skeleton, v_flex
+    ActiveTheme as _, Disableable, IndexPath, Sizable, WindowExt, button::{Button, ButtonVariants}, checkbox::Checkbox, h_flex, input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent}, notification::{Notification, NotificationType}, select::{SearchableVec, Select, SelectEvent, SelectState}, skeleton::Skeleton, v_flex
 };
 use schema::{fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, instance::{AUTO_LIBRARY_PATH_GLFW, AUTO_LIBRARY_PATH_OPENAL, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration, InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration, LwjglLibraryPath}, loader::Loader, version_manifest::MinecraftVersionManifest};
 use strum::IntoEnumIterator;
@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crate::{
 	component::{horizontal_sections::HorizontalSections, named_dropdown::{NamedDropdown, NamedDropdownItem}, path_label::PathLabel},
-	entity::{DataEntities, account::{AccountEntries, AccountExt}, instance::InstanceEntry, metadata::{AsMetadataResult, FrontendMetadata, FrontendMetadataResult, FrontendMetadataState, TypelessFrontendMetadataResult}},
-	interface_config::InterfaceConfig, pages::instances_page::VersionList, png_render_cache, ts
+	entity::{DataEntities, account::AccountEntries, instance::InstanceEntry, metadata::{AsMetadataResult, FrontendMetadata, FrontendMetadataResult, FrontendMetadataState, TypelessFrontendMetadataResult}},
+	interface_config::InterfaceConfig, pages::instances_page::VersionList, ts
 };
 
 #[derive(PartialEq, Eq)]
@@ -68,7 +68,6 @@ pub struct InstanceSettingsSubpage {
     #[cfg(target_os = "linux")]
     gamemode_available: bool,
     new_name_change_state: NewNameChangeState,
-    icon: Option<EmbeddedOrRaw>,
     backend_handle: BackendHandle,
     _observe_loader_version_subscription: Option<Subscription>,
     _select_file_task: Task<()>,
@@ -100,14 +99,6 @@ impl InstanceSettingsSubpage {
 
         let instance_root_label = PathLabel::new(entry.root_path.clone(), true);
 
-        let icon = if let Some(raw) = entry.icon.clone() {
-            Some(EmbeddedOrRaw::Raw(raw))
-        } else if let Some(embedded) = entry.configuration.instance_fallback_icon {
-            Some(EmbeddedOrRaw::Embedded(embedded.as_str().into()))
-        } else {
-            None
-        };
-
         let glfw_path = system_libraries.glfw.get_or_auto(&*AUTO_LIBRARY_PATH_GLFW);
         let openal_path = system_libraries.openal.get_or_auto(&*AUTO_LIBRARY_PATH_OPENAL);
 
@@ -124,26 +115,24 @@ impl InstanceSettingsSubpage {
         }).detach();
         cx.subscribe(&version_select_state, Self::on_minecraft_version_selected).detach();
 
-        let hide_usernames = InterfaceConfig::get(cx).hide_usernames;
-
         let account_items = cx.new(|cx| {
-            let accounts = &data.accounts.read(cx).accounts;
-            let mut account_items = Vec::with_capacity(accounts.len());
-            let mut selected = None;
-            for (index, loop_account) in accounts.iter().enumerate() {
-                account_items.push(NamedDropdownItem {
-                    name: loop_account.username(hide_usernames),
-                    item: loop_account.uuid,
-                });
-                if let Some(preferred_account) = account && loop_account.uuid == preferred_account {
-                    selected = Some(IndexPath::new(index));
-                }
+       		let accounts = &data.accounts.read(cx).accounts;
+         	let mut account_items = Vec::with_capacity(accounts.len());
+          	let mut selected = None;
+          	for (index, loop_account) in accounts.iter().enumerate() {
+           		account_items.push(NamedDropdownItem {
+             		name: loop_account.username.clone().into(),
+             		item: loop_account.uuid,
+             	});
+             	if let Some(preferred_account) = account && loop_account.uuid == preferred_account {
+              		selected = Some(IndexPath::new(index));
+              	}
            	}
 
-            SelectState::new(NamedDropdown::new(account_items), selected, window, cx).searchable(true)
+         	SelectState::new(NamedDropdown::new(account_items), selected, window, cx).searchable(true)
         });
         cx.observe_in(&data.accounts, window, |page, accounts, window, cx| {
-            page.update_account_list(accounts, window, cx);
+        	page.update_account_list(accounts, window, cx);
         }).detach();
         cx.subscribe(&account_items, Self::on_account_selected).detach();
 
@@ -161,13 +150,6 @@ impl InstanceSettingsSubpage {
         cx.observe_in(instance, window, |page, instance, window, cx| {
             let entry = instance.read(cx);
             page.instance_root_label = PathLabel::new(entry.root_path.clone(), true);
-            page.icon = if let Some(raw) = entry.icon.clone() {
-                Some(EmbeddedOrRaw::Raw(raw))
-            } else if let Some(embedded) = entry.configuration.instance_fallback_icon {
-                Some(EmbeddedOrRaw::Embedded(embedded.as_str().into()))
-            } else {
-                None
-            };
             if page.loader_version_select_state.read(cx).selected_index(cx).is_none() {
                 let version = entry.configuration.preferred_loader_version.map(|s| s.as_str()).unwrap_or("Latest");
                 page.loader_version_select_state.update(cx, |select_state, cx| {
@@ -243,7 +225,6 @@ impl InstanceSettingsSubpage {
             #[cfg(target_os = "linux")]
             gamemode_available: Self::is_command_available("gamemoderun"),
             new_name_change_state: NewNameChangeState::NoChange,
-            icon,
             backend_handle,
             loader_versions_state: TypelessFrontendMetadataResult::Loading,
             _observe_loader_version_subscription: None,
@@ -379,17 +360,16 @@ impl InstanceSettingsSubpage {
     }
 
     fn update_account_list(&mut self, accounts: Entity<AccountEntries>, window: &mut Window, cx: &mut Context<Self>) {
-        let hide_usernames = InterfaceConfig::get(cx).hide_usernames;
+  		let list = accounts.read(cx).accounts
+   			.iter().map(|account| NamedDropdownItem {
+	            name: account.username.clone().into(),
+	            item: account.uuid,
+    		}).collect::<Vec<NamedDropdownItem<Uuid>>>();
 
-        let list = accounts.read(cx).accounts
-            .iter().map(|account| NamedDropdownItem {
-                name: account.username(hide_usernames),
-                item: account.uuid,
-            }).collect::<Vec<NamedDropdownItem<Uuid>>>();
 
-        self.account_items.update(cx, move |items, cx| {
-            items.set_items(NamedDropdown::new(list), window, cx);
-        })
+    	self.account_items.update(cx, move |items, cx| {
+       		items.set_items(NamedDropdown::new(list), window, cx);
+     	})
     }
 
     pub fn on_new_name_input(
@@ -684,8 +664,7 @@ impl InstanceSettingsSubpage {
 
 impl Render for InstanceSettingsSubpage {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
-        let theme_radius = cx.theme().radius;
-        let theme_border = cx.theme().border;
+        let theme = cx.theme();
 
         let header = h_flex()
             .gap_3()
@@ -697,18 +676,6 @@ impl Render for InstanceSettingsSubpage {
         let wrapper_command_enabled = self.wrapper_command_enabled;
         let jvm_flags_enabled = self.jvm_flags_enabled;
         let jvm_binary_enabled = self.jvm_binary_enabled;
-
-        let icon_element: Option<AnyElement> = self.icon.clone().map(|icon| match icon {
-            EmbeddedOrRaw::Embedded(path) => {
-                Icon::default().path(path).size_8().min_w_8().min_h_8().into_any_element()
-            },
-            EmbeddedOrRaw::Raw(data) => {
-                let radius = theme_radius;
-                let transform = png_render_cache::ImageTransformation::Resize { width: 32, height: 32 };
-                png_render_cache::render_with_transform(data, transform, cx)
-                    .rounded(radius).size_8().min_w_8().min_h_8().into_any_element()
-            },
-        });
 
         let mut basic_content = v_flex()
             .gap_4()
@@ -738,32 +705,7 @@ impl Render for InstanceSettingsSubpage {
                         }
                     })
                 )
-            )
-            .child(crate::labelled(
-                ts!("common.icon"),
-                {
-                    let mut row = h_flex().gap_2()
-                        .child(Button::new("icon").icon(crate::icon::PandoraIcon::Plus).label(ts!("instance.select_icon")).on_click({
-                            let entity = cx.entity();
-                            move |_, window, cx| {
-                                let entity = entity.clone();
-                                crate::modals::select_icon::open_select_icon(Box::new(move |icon, cx| {
-                                    cx.update_entity(&entity, |this, _| {
-                                        this.icon = Some(icon.clone());
-                                        this.backend_handle.send(MessageToBackend::SetInstanceIcon {
-                                            id: this.instance_id,
-                                            icon: Some(icon),
-                                        });
-                                    });
-                                }), window, cx);
-                            }
-                        }));
-                    if let Some(el) = icon_element {
-                        row = row.child(el);
-                    }
-                    row
-                }
-            ));
+            );
 
         let mut version_content = v_flex().gap_2();
 
@@ -847,7 +789,6 @@ impl Render for InstanceSettingsSubpage {
                     )
                     .child(v_flex()
                         .gap_1()
-                        .line_height(px(24.0))
                         .child(ts!("common.min"))
                         .child(ts!("common.max")))
                 )
@@ -995,29 +936,25 @@ impl Render for InstanceSettingsSubpage {
             .gap_4()
             .size_full()
             .child(crate::labelled(
-                "Instance Folder (click to relocate)",
-                self.instance_root_label.button("relocate").on_click({
+                "Instance Folder",
+               self.instance_root_label.button("relocate").on_click({
                     let instance = self.instance.clone();
                     let backend_handle = self.backend_handle.clone();
                     move |_: &ClickEvent, _, cx| {
+                        let user_dirs = directories::UserDirs::new();
+                        let directory = user_dirs.as_ref()
+                            .and_then(directories::UserDirs::desktop_dir).unwrap_or(Path::new("."));
+
                         let instance = instance.read(cx);
                         let id = instance.id;
 
-                        let receiver = cx.prompt_for_paths(PathPromptOptions {
-                            files: false,
-                            directories: true,
-                            multiple: false,
-                            prompt: Some("Select empty directory".into()),
-                        });
+                        let receiver = cx.prompt_for_new_path(directory, Some(instance.name.as_str()));
                         let backend_handle = backend_handle.clone();
                         cx.spawn(async move |_| {
-                            let Ok(Ok(Some(mut paths))) = receiver.await else {
+                            let Ok(Ok(Some(path))) = receiver.await else {
                                 return;
                             };
-                            if paths.is_empty() {
-                                return;
-                            }
-                            backend_handle.send(MessageToBackend::RelocateInstance { id, path: paths.swap_remove(0) });
+                            backend_handle.send(MessageToBackend::RelocateInstance { id, path });
                         }).detach();
                     }
                 })
@@ -1084,8 +1021,8 @@ impl Render for InstanceSettingsSubpage {
             .child(div()
                 .size_full()
                 .border_1()
-                .rounded(theme_radius)
-                .border_color(theme_border)
+                .rounded(theme.radius)
+                .border_color(theme.border)
                 .child(sections)
             )
     }

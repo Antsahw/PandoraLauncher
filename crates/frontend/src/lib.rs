@@ -87,7 +87,7 @@ pub const MAIN_FONT: &'static str = "Inter 24pt 24pt";
 #[cfg(not(windows))]
 pub const MAIN_FONT: &'static str = "Inter 24pt";
 
-actions!([Quit, CloseWindow, OpenSettings, Forwards, Backwards]);
+actions!([Quit, CloseWindow, OpenSettings]);
 
 pub fn start(
     launcher_dir: PathBuf,
@@ -108,7 +108,6 @@ pub fn start(
         let _ = cx.text_system().add_fonts(vec![
             Assets.load("fonts/inter/Inter-Regular.ttf").unwrap().unwrap(),
             Assets.load("fonts/roboto-mono/RobotoMono-Regular.ttf").unwrap().unwrap(),
-            Assets.load("fonts/minecraft.ttf").unwrap().unwrap(),
         ]);
 
         gpui_component::init(cx);
@@ -171,8 +170,6 @@ pub fn start(
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-w", CloseWindow, None),
             KeyBinding::new("secondary-,", OpenSettings, None),
-            KeyBinding::new("secondary-[", Backwards, None),
-            KeyBinding::new("secondary-]", Forwards, None),
         ]);
 
         cx.on_action(|_: &Quit, cx| {

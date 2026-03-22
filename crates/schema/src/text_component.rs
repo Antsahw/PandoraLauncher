@@ -104,7 +104,7 @@ fn append_flat(component: &mut FlatTextComponent, value: serde_json::Value) {
                 style.strikethrough = Some(*value);
             }
 
-            let start_runs = component.runs.len();
+            let index = component.runs.len();
             let start = component.content.len();
 
             let text = if let Some(serde_json::Value::String(string)) = map.remove("text") {
@@ -126,64 +126,23 @@ fn append_flat(component: &mut FlatTextComponent, value: serde_json::Value) {
             let end = component.content.len();
 
             if end > start && style != TextComponentStyle::default() {
-                // Ideally we could just insert start..end, but gpui doesn't handle overlaps properly
-
-                let mut ix = start;
-                let mut run_index = start_runs;
-
-                while let Some(run) = component.runs.get_mut(run_index) {
-                    if run.range.start > ix {
-                        let until = run.range.start;
-                        component.runs.insert(run_index, TextComponentRun {
-                            range: ix..until,
-                            style: style.clone(),
-                        });
-                        ix = until;
-                        run_index += 1;
-                        continue;
-                    }
-
-                    if run.style.colour.is_none() {
-                        run.style.colour = style.colour;
-                    }
-                    if run.style.bold.is_none() {
-                        run.style.bold = style.bold;
-                    }
-                    if run.style.italic.is_none() {
-                        run.style.italic = style.italic;
-                    }
-                    if run.style.underlined.is_none() {
-                        run.style.underlined = style.underlined;
-                    }
-                    if run.style.strikethrough.is_none() {
-                        run.style.strikethrough = style.strikethrough;
-                    }
-
-                    ix = run.range.end;
-                    run_index += 1;
-                }
-
-                if ix < end {
-                    component.runs.push(TextComponentRun {
-                        range: ix..end,
-                        style
-                    });
-                }
+                component.runs.insert(index, TextComponentRun {
+                    range: start..end,
+                    style
+                });
             }
         },
     }
 }
 
 fn append_string(component: &mut FlatTextComponent, mut text: String) {
-    let current_len = component.content.len();
-
     let mut last_legacy_color = None;
     let mut current_style = TextComponentStyle::default();
     while let Some(pos) = text.find('\u{00a7}') {
         if let Some((from, style)) = last_legacy_color.take() {
             if pos > from {
                 component.runs.push(TextComponentRun {
-                    range: current_len+from..current_len+pos,
+                    range: from..pos,
                     style,
                 });
             }
@@ -227,7 +186,7 @@ fn append_string(component: &mut FlatTextComponent, mut text: String) {
         let to = text.len();
         if to > from {
             component.runs.push(TextComponentRun {
-                range: current_len+from..current_len+to,
+                range: from..to,
                 style,
             });
         }

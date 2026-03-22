@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use bridge::{handle::BackendHandle, message::{BackendConfigWithPassword, MessageToBackend}};
-use gpui::{prelude::FluentBuilder, *};
+use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
@@ -119,7 +119,6 @@ pub fn build_settings_sheet(data: &DataEntities, window: &mut Window, cx: &mut A
             .title(ts!("settings.title"))
             .size(px(420.))
             .p_0()
-            .when(cfg!(target_os = "macos"), |this| this.pt_5())
             .child(v_flex()
                 .border_t_1()
                 .border_color(cx.theme().border)
@@ -233,14 +232,6 @@ impl Settings {
 
     fn save_proxy_config(&mut self, cx: &mut Context<Self>) {
         let config = self.get_proxy_config(cx);
-
-        if let Some(backend_config) = &mut self.backend_config {
-            if !self.proxy_password_changed && backend_config.proxy == config {
-                return;
-            }
-            backend_config.proxy = config.clone();
-        }
-
         let password = if self.proxy_password_changed {
             Some(self.proxy_password_input.read(cx).value().to_string())
         } else {
@@ -329,19 +320,14 @@ impl Settings {
 
         div = div.child(crate::labelled(ts!("settings.privacy.title"),
             v_flex().gap_2()
-                .child(Checkbox::new("hide-usernames")
-                    .label(ts!("settings.privacy.hide_usernames"))
-                    .checked(interface_config.hide_usernames)
-                    .on_click(|value, _, cx| {
-                        InterfaceConfig::get_mut(cx).hide_usernames = *value;
-                    }))
                 .child(Checkbox::new("hide-server-addresses")
                     .label(ts!("settings.privacy.hide_server_addresses"))
                     .checked(interface_config.hide_server_addresses)
                     .on_click(|value, _, cx| {
                         InterfaceConfig::get_mut(cx).hide_server_addresses = *value;
                     }))
-        ));
+                )
+        );
 
         div
     }

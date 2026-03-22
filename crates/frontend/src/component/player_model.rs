@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use gpui::{App, AppContext, AvailableSpace, Bounds, Element, Entity, IntoElement, RenderImage, Size, Style, Task, px, size};
-use schema::minecraft_profile::SkinVariant;
 
 pub const DEFAULT_YAW: f64 = 22.5;
 pub const DEFAULT_PITCH: f64 = 10.5;
@@ -11,7 +10,6 @@ struct RenderedPlayerModel {
     image: Arc<RenderImage>,
     skin: Arc<[u8]>,
     cape: Option<Arc<[u8]>>,
-    variant: SkinVariant,
     yaw: f64,
     pitch: f64,
     animation: f64,
@@ -22,7 +20,6 @@ struct RenderedPlayerModel {
 pub struct PlayerModelState {
     pub skin: Arc<[u8]>,
     pub cape: Option<Arc<[u8]>>,
-    pub variant: SkinVariant,
     pub yaw: f64,
     pub pitch: f64,
     pub animation: f64,
@@ -31,11 +28,10 @@ pub struct PlayerModelState {
 }
 
 impl PlayerModelState {
-    pub fn new(cx: &mut App, skin: Arc<[u8]>, variant: SkinVariant) -> Entity<Self> {
+    pub fn new(cx: &mut App, skin: Arc<[u8]>) -> Entity<Self> {
         let entity = cx.new(|_| Self {
             skin,
             cape: None,
-            variant,
             yaw: DEFAULT_YAW,
             pitch: DEFAULT_PITCH,
             animation: DEFAULT_ANIMATION,
@@ -56,7 +52,6 @@ impl PlayerModelState {
         };
         if rendered.width != width || rendered.height != height || rendered.yaw != self.yaw
             || rendered.pitch != self.pitch || rendered.animation != self.animation
-            || rendered.variant != self.variant
             || !Arc::ptr_eq(&rendered.skin, &self.skin)
         {
                 return true;
@@ -152,24 +147,20 @@ impl Element for PlayerModel {
         window: &mut gpui::Window,
         cx: &mut gpui::App,
     ) {
-        let element_height = bounds.size.height.as_f32().round();
-        let element_width = (element_height as f32 * crate::skin_renderer::ASPECT_RATIO as f32).round();
-        let window_scale = window.scale_factor();
-        let image_height = (element_height * window_scale) as u32;
-        let image_width = (element_width * window_scale) as u32;
+        let height = bounds.size.height.as_f32() as u32;
+        let width = (height as f32 * crate::skin_renderer::ASPECT_RATIO as f32) as u32;
         self.state.update(cx, |state, cx| {
-            if state.render_task.is_none() && state.needs_rerender(image_width, image_height) {
+            if state.render_task.is_none() && state.needs_rerender(width, height) {
                 let skin = state.skin.clone();
                 let cape = state.cape.clone();
                 let yaw = state.yaw;
                 let pitch = state.pitch;
                 let animation = state.animation;
-                let variant = state.variant;
 
                 let (send, recv) = tokio::sync::oneshot::channel();
 
                 cx.background_executor().spawn(async move {
-                    send.send(crate::skin_renderer::render_skin_3d(&skin, cape.as_deref(), variant, image_width, image_height, yaw, pitch, animation))
+                    send.send(crate::skin_renderer::render_skin_3d(&skin, cape.as_deref(), width, height, yaw, pitch, animation))
                 }).detach();
 
                 let skin = state.skin.clone();
@@ -193,12 +184,11 @@ impl Element for PlayerModel {
                             image: render_image,
                             skin,
                             cape,
-                            variant,
                             yaw,
                             pitch,
                             animation,
-                            width: image_width,
-                            height: image_height,
+                            width,
+                            height,
                         });
                         state.render_task = None;
                         cx.notify();
@@ -210,7 +200,7 @@ impl Element for PlayerModel {
                 _ = window.paint_image(
                     Bounds {
                         origin: bounds.origin,
-                        size: Size::new(px(element_width), px(element_height)),
+                        size: Size::new(px(width as f32), px(height as f32)),
                     },
                     Default::default(),
                     rendered.image.clone(),

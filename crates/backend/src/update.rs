@@ -290,28 +290,9 @@ fn write_new_exe(old_exe: PathBuf, new_exe: PathBuf, data: &[u8], dirs: &Launche
     result
 }
 
-fn try_canonicalize(path: &Path) -> Option<PathBuf> {
-    let canonical = path.canonicalize().ok()?;
-
-    if cfg!(windows) {
-        let path_bytes = path.as_os_str().as_encoded_bytes();
-        let canonical_bytes = canonical.as_os_str().as_encoded_bytes();
-        if canonical_bytes.len() == path_bytes.len()+4
-            && &canonical_bytes[..4] == b"\\\\?\\"
-            && &canonical_bytes[4..] == path_bytes
-        {
-            None
-        } else {
-            Some(canonical)
-        }
-    } else {
-        Some(canonical)
-    }
-}
-
 fn move_new_exe_into(old_exe_path: PathBuf, new_exe_path: PathBuf, new_exe_data: &Path) -> Result<(), String> {
-    let old_exe_path = try_canonicalize(&old_exe_path).unwrap_or(old_exe_path);
-    let new_exe_path = try_canonicalize(&new_exe_path).unwrap_or(new_exe_path);
+    let old_exe_path = old_exe_path.canonicalize().unwrap_or(old_exe_path);
+    let new_exe_path = new_exe_path.canonicalize().unwrap_or(new_exe_path);
 
     if let Err(err) = std::fs::rename(&new_exe_data, &new_exe_path) {
         if err.kind() == std::io::ErrorKind::PermissionDenied {
@@ -343,31 +324,21 @@ fn move_new_exe_into(old_exe_path: PathBuf, new_exe_path: PathBuf, new_exe_data:
                     runas::Command::new("sh").arg("-c").arg(command).gui(true).status()
                 }
             };
-
             #[cfg(target_os = "windows")]
             let result = {
-                let mut ps_arguments: Vec<&OsStr> = Vec::new();
-                ps_arguments.push(OsStr::new("Move-Item"));
-                ps_arguments.push(OsStr::new("-Path"));
-                ps_arguments.push(new_exe_data.as_os_str());
-                ps_arguments.push(OsStr::new("-Destination"));
-                ps_arguments.push(new_exe_path.as_os_str());
+                let mut command = OsString::new();
+                command.push("Move-Item -Path '");
+                command.push(new_exe_data.as_os_str());
+                command.push("' -Destination '");
+                command.push(new_exe_path.as_os_str());
 
                 if old_exe_path == new_exe_path {
-                    ps_arguments.push(OsStr::new("-Force"));
+                    command.push("' -Force");
                 } else {
-                    ps_arguments.push(OsStr::new("-Force;"));
-                    ps_arguments.push(OsStr::new("if"));
-                    ps_arguments.push(OsStr::new("($?)"));
-                    ps_arguments.push(OsStr::new("{"));
-                    ps_arguments.push(OsStr::new("Remove-Item"));
-                    ps_arguments.push(OsStr::new("-Path"));
-                    ps_arguments.push(old_exe_path.as_os_str());
-                    ps_arguments.push(OsStr::new("-Force"));
-                    ps_arguments.push(OsStr::new("}"));
+                    command.push("' -Force; if ($?) { Remove-Item -Path '");
+                    command.push(old_exe_path.as_os_str());
+                    command.push("' }");
                 }
-
-                let command = crate::join_windows_shell_os(&ps_arguments);
 
                 log::info!("Running with powershell.exe: {}", command.to_string_lossy());
 
@@ -491,6 +462,7 @@ fn install_app_update(current_app_folder: PathBuf, bytes: &[u8], temp_extract: &
     Ok(())
 }
 
+
 #[cfg(windows)]
 fn run_admin_powershell(script: &OsStr) -> std::process::ExitStatus {
     unsafe {
@@ -501,8 +473,9 @@ fn run_admin_powershell(script: &OsStr) -> std::process::ExitStatus {
         );
 
         use std::os::windows::ffi::OsStrExt;
-        let encoded = crate::join_windows_shell_os(&[OsStr::new("-Command"), script]).encode_wide()
-            .chain(OsStr::new("\0").encode_wide())
+        let encoded = OsStr::new("-Command \"").encode_wide()
+            .chain(script.encode_wide())
+            .chain(OsStr::new("\"\0").encode_wide())
             .collect::<Vec<_>>();
 
         sei.fMask = windows::Win32::UI::Shell::SEE_MASK_NOASYNC | windows::Win32::UI::Shell::SEE_MASK_NOCLOSEPROCESS;

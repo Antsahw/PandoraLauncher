@@ -729,46 +729,18 @@ impl ModMetadataManager {
             extra: ContentType::ResourcePack
         }))
     }
-
-    pub fn create_resource_pack(pack_mcmeta_bytes: &[u8], pack_png_bytes: Option<&[u8]>) -> Option<Arc<ContentSummary>> {
-        let pack_mcmeta: PackMcmeta = serde_json::from_slice(&pack_mcmeta_bytes).inspect_err(|e| {
-            log::error!("Error parsing pack.mcmeta: {e}");
-        }).ok()?;
-
-        let png_icon = pack_png_bytes.map(load_icon_bytes).flatten();
-
-        Some(Arc::new(ContentSummary {
-            id: None,
-            hash: [0; 20],
-            name: None,
-            authors: "".into(),
-            version_str: "".into(),
-            rich_description: Some(Arc::new(pack_mcmeta.pack.description)),
-            png_icon,
-            extra: ContentType::ResourcePack
-        }))
-    }
 }
-
 
 fn load_icon<R: rc_zip_sync::HasCursor>(icon_file: rc_zip_sync::EntryHandle<R>) -> Option<Arc<[u8]>> {
-    let Ok(icon_bytes) = icon_file.bytes() else {
+    let Ok(mut icon_bytes) = icon_file.bytes() else {
         return None;
     };
 
-    load_icon_bytes(&icon_bytes)
-}
-
-fn load_icon_bytes(icon_bytes: &[u8]) -> Option<Arc<[u8]>> {
-    let Ok(mut image) = image::load_from_memory(&icon_bytes) else {
+    let Ok(image) = image::load_from_memory(&icon_bytes) else {
         return None;
     };
-    let mut changed = false;
 
-    if let Some(cropped) = crop_to_content(&image) {
-        image = cropped;
-        changed = true;
-    }
+    let image = crop_to_content(image);
 
     let width = image.width();
     let height = image.height();
@@ -778,24 +750,20 @@ fn load_icon_bytes(icon_bytes: &[u8]) -> Option<Arc<[u8]>> {
         } else {
             FilterType::Nearest
         };
-        image = image.resize(64, 64, filter);
-        changed = true;
+        let resized = image.resize(64, 64, filter);
+
+        icon_bytes.clear();
+        let mut cursor = Cursor::new(&mut icon_bytes);
+        let encoder = image::codecs::png::PngEncoder::new_with_quality(&mut cursor, image::codecs::png::CompressionType::Best, Default::default());
+        if resized.write_with_encoder(encoder).is_err() {
+            return None;
+        }
     }
 
-    if !changed {
-        return Some(icon_bytes.into());
-    }
-
-    let mut modified_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut modified_bytes);
-    let encoder = image::codecs::png::PngEncoder::new_with_quality(&mut cursor, image::codecs::png::CompressionType::Best, Default::default());
-    if image.write_with_encoder(encoder).is_err() {
-        return None;
-    }
-    return Some(modified_bytes.into());
+    Some(icon_bytes.into())
 }
 
-fn crop_to_content(image: &DynamicImage) -> Option<DynamicImage> {
+fn crop_to_content(image: DynamicImage) -> DynamicImage {
     let width = image.width();
     let height = image.height();
     let mut min_x = 0;
@@ -805,7 +773,7 @@ fn crop_to_content(image: &DynamicImage) -> Option<DynamicImage> {
 
     'crop_min_x: loop {
         if min_x >= max_x {
-            return None;
+            return image;
         }
         for y in min_y..max_y {
             if image.get_pixel(min_x, y).0[3] != 0 {
@@ -816,7 +784,7 @@ fn crop_to_content(image: &DynamicImage) -> Option<DynamicImage> {
     }
     'crop_max_x: loop {
         if max_x <= min_x {
-            return None;
+            return image;
         }
         for y in min_y..max_y {
             if image.get_pixel(max_x-1, y).0[3] != 0 {
@@ -827,7 +795,7 @@ fn crop_to_content(image: &DynamicImage) -> Option<DynamicImage> {
     }
     'crop_min_y: loop {
         if min_y >= max_y {
-            return None;
+            return image;
         }
         for x in min_x..max_x {
             if image.get_pixel(x, min_y).0[3] != 0 {
@@ -838,7 +806,7 @@ fn crop_to_content(image: &DynamicImage) -> Option<DynamicImage> {
     }
     'crop_max_y: loop {
         if max_y <= min_y {
-            return None;
+            return image;
         }
         for x in min_x..max_x {
             if image.get_pixel(x, max_y-1).0[3] != 0 {
@@ -849,9 +817,9 @@ fn crop_to_content(image: &DynamicImage) -> Option<DynamicImage> {
     }
 
     if min_x != 0 || max_x != width || min_y != 0 || max_y != height {
-        Some(image.crop_imm(min_x, min_y, max_x - min_x, max_y - min_y))
+        image.crop_imm(min_x, min_y, max_x - min_x, max_y - min_y)
     } else {
-        None
+        image
     }
 }
 

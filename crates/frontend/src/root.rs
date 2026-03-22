@@ -10,7 +10,7 @@ use bridge::{
 use gpui::{prelude::*, *};
 use gpui_component::{Root, Theme, WindowExt, scroll::ScrollableElement, v_flex};
 
-use crate::{Backwards, CloseWindow, Forwards, MAIN_FONT, OpenSettings, entity::DataEntities, modals, ts, ui::{LauncherUI, PageType}};
+use crate::{CloseWindow, MAIN_FONT, OpenSettings, entity::DataEntities, modals, ts, ui::{LauncherUI, PageType}};
 
 pub struct LauncherRootGlobal {
     pub root: Entity<LauncherRoot>,
@@ -83,38 +83,6 @@ impl Render for LauncherRoot {
                 move |_: &OpenSettings, window, cx| {
                     let build = crate::modals::settings::build_settings_sheet(&data, window, cx);
                     window.open_sheet_at(gpui_component::Placement::Left, cx, build);
-                }
-            })
-            .on_action({
-                let ui = self.ui.clone();
-                move |_: &Backwards, window, cx| {
-                    ui.update(cx, |ui, cx| {
-                        ui.nav_backwards(window, cx);
-                    });
-                }
-            })
-            .on_action({
-                let ui = self.ui.clone();
-                move |_: &Forwards, window, cx| {
-                    ui.update(cx, |ui, cx| {
-                        ui.nav_forwards(window, cx);
-                    });
-                }
-            })
-            .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), {
-                let ui = self.ui.clone();
-                move |_, window, cx| {
-                    ui.update(cx, |ui, cx| {
-                        ui.nav_backwards(window, cx);
-                    });
-                }
-            })
-            .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), {
-                let ui = self.ui.clone();
-                move |_, window, cx| {
-                    ui.update(cx, |ui, cx| {
-                        ui.nav_forwards(window, cx);
-                    });
                 }
             })
             .into_any_element()

@@ -1,29 +1,27 @@
-use std::{io::Cursor, path::{Path, PathBuf}, sync::Arc};
+use std::{io::Cursor, path::{Path, PathBuf}};
 
-use bridge::{import::ImportFromOtherLauncherJob, modal_action::{ModalAction, ProgressTracker}};
+use bridge::{import::ImportFromOtherLauncher, modal_action::{ModalAction, ProgressTracker}, safe_path::SafePath};
 use image::ImageFormat;
-use rustc_hash::FxHashMap;
 use schema::{instance::InstanceConfiguration, loader::Loader};
 
 use crate::BackendState;
+
 
 struct ModrinthInstanceToImport {
     pandora_path: PathBuf,
     instance_configuration: InstanceConfiguration,
     icon_path: Option<String>,
-    minecraft_folder: Arc<Path>,
+    minecraft_folder: PathBuf,
 }
 
-pub fn import_instances_from_modrinth(backend: &BackendState, import_job: ImportFromOtherLauncherJob, modal_action: &ModalAction) -> rusqlite::Result<()> {
-    if import_job.paths.is_empty() {
-        return Ok(());
-    }
-
+pub fn import_instances_from_modrinth(backend: &BackendState, modrinth: &Path, modal_action: &ModalAction) -> rusqlite::Result<()> {
     let all_tracker = ProgressTracker::new("Importing instances".into(), backend.send.clone());
     modal_action.trackers.push(all_tracker.clone());
     all_tracker.notify();
 
-    let app_db = import_job.root.join("app.db");
+    let profiles = modrinth.join("profiles");
+    let app_db = modrinth.join("app.db");
+
     if !app_db.exists() {
         return Ok(());
     }
@@ -35,28 +33,15 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
 
     let mut to_import = Vec::new();
 
-    let mut name_to_path = FxHashMap::default();
-    for path in import_job.paths.iter() {
-        let Some(file_name) = path.file_name() else {
-            continue;
-        };
-        let Some(file_name) = file_name.to_str() else {
-            continue;
-        };
-        name_to_path.insert(file_name.to_string(), path.clone());
-    }
-
     while let Ok(Some(row)) = query.next() {
-        let filename: String = row.get(0)?;
+        let path: String = row.get(0)?;
 
-        let pandora_path = backend.directories.instances_dir.join(&filename);
-        if pandora_path.exists() {
-           continue;
+        if SafePath::new(&path).is_none() {
+            modal_action.set_error_message(format!("Refusing to load instance with illegal path: {}", path).into());
+            return Ok(());
         }
 
-        let Some(profile) = name_to_path.get(&filename) else {
-            continue;
-        };
+        let profile = profiles.join(&path);
         if !profile.is_dir() {
             continue;
         }
@@ -73,10 +58,10 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
         let instance_configuration = InstanceConfiguration::new(game_version.into(), loader);
 
         to_import.push(ModrinthInstanceToImport {
-            pandora_path,
+            pandora_path: backend.directories.instances_dir.join(path),
             instance_configuration,
             icon_path,
-            minecraft_folder: profile.clone(),
+            minecraft_folder: profile,
         });
     }
 
@@ -98,12 +83,12 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
 
         // Copy .minecraft folder
         let target_dot_minecraft = to_import.pandora_path.join(".minecraft");
-
-        _ = std::fs::create_dir_all(&target_dot_minecraft);
-        _ = crate::copy_content_recursive(&to_import.minecraft_folder, &target_dot_minecraft, false, &|copied, total| {
-            tracker.set_total(total as usize);
-            tracker.set_count(copied as usize);
+        let copy_options = fs_extra::dir::CopyOptions::default().copy_inside(true);
+        _ = fs_extra::dir::copy_with_progress(to_import.minecraft_folder, target_dot_minecraft, &copy_options, |state| {
+            tracker.set_total(state.total_bytes as usize);
+            tracker.set_count(state.copied_bytes as usize);
             tracker.notify();
+            fs_extra::dir::TransitProcessResult::ContinueOrAbort
         });
 
         // Copy icon
@@ -142,7 +127,9 @@ pub fn import_instances_from_modrinth(backend: &BackendState, import_job: Import
     Ok(())
 }
 
-pub fn read_profiles_from_modrinth_db(modrinth: &Path) -> rusqlite::Result<Option<Vec<Arc<Path>>>> {
+pub fn read_profiles_from_modrinth_db(data_dir: &Path) -> rusqlite::Result<Option<ImportFromOtherLauncher>> {
+    let modrinth = data_dir.join("ModrinthApp");
+    let profiles = modrinth.join("profiles");
     let app_db = modrinth.join("app.db");
 
     if !app_db.exists() {
@@ -156,14 +143,16 @@ pub fn read_profiles_from_modrinth_db(modrinth: &Path) -> rusqlite::Result<Optio
 
     let mut paths = Vec::new();
 
-    let profiles = modrinth.join("profiles");
     while let Ok(Some(row)) = query.next() {
         let path: String = row.get(0)?;
         let profile = profiles.join(path);
         if profile.is_dir() {
-            paths.push(profile.into());
+            paths.push(profile);
         }
     }
 
-    Ok(Some(paths))
+    Ok(Some(ImportFromOtherLauncher {
+        can_import_accounts: false,
+        paths,
+    }))
 }

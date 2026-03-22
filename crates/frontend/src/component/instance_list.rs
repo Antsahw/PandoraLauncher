@@ -91,7 +91,7 @@ impl InstanceList {
             Icon::default().path(icon_path).size_16().min_w_16().min_h_16().into_any_element()
         };
 
-        let play_button = render_play_button(item, index, self.backend_handle.clone());
+        let play_button = render_play_button(item, self.backend_handle.clone());
 
         let theme = cx.theme();
         v_flex()
@@ -169,7 +169,7 @@ impl TableDelegate for InstanceList {
                 "name" => item.name.clone().into_any_element(),
                 "version" => item.configuration.minecraft_version.as_str().into_any_element(),
                 "controls" => {
-                    let play_button = render_play_button(item, row_ix, self.backend_handle.clone());
+                    let play_button = render_play_button(item, self.backend_handle.clone());
 
                     h_flex()
                         .size_full()
@@ -194,12 +194,12 @@ impl TableDelegate for InstanceList {
     }
 }
 
-fn render_play_button(item: &InstanceEntry, index: usize, backend_handle: BackendHandle) -> Button {
+fn render_play_button(item: &InstanceEntry, backend_handle: BackendHandle) -> Button {
     let name = item.name.clone();
     let id = item.id;
     match item.status {
         InstanceStatus::NotRunning => {
-            Button::new(("start_instance", index))
+            Button::new("start_instance")
                 .success()
                 .label(ts!("instance.start.label"))
                 .on_click(
@@ -209,12 +209,12 @@ fn render_play_button(item: &InstanceEntry, index: usize, backend_handle: Backen
             )
         },
         InstanceStatus::Launching => {
-            Button::new(("launching", index))
+            Button::new("launching")
                 .warning()
                 .label("...")
         },
         InstanceStatus::Running => {
-            Button::new(("kill_instance", index))
+            Button::new("kill_instance")
                 .danger()
                 .label(ts!("instance.kill"))
                 .on_click({

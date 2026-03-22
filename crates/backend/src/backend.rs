@@ -24,7 +24,7 @@ use tokio::sync::{OnceCell, Semaphore, mpsc::Receiver};
 use uuid::Uuid;
 
 use crate::{
-    account::{BackendAccountInfo, MinecraftLoginInfo}, directories::LauncherDirectories, id_slab::IdSlab, instance::{ContentFolder, Instance}, launch::Launcher, metadata::{items::{CurseforgeGetFilesMetadataItem, MinecraftVersionManifestMetadataItem}, manager::MetadataManager}, mod_metadata::ModMetadataManager, persistent::Persistent, server_list_pinger::ServerListPinger, skin_manager::SkinManager
+    account::{BackendAccountInfo, MinecraftLoginInfo}, directories::LauncherDirectories, id_slab::IdSlab, instance::{ContentFolder, Instance}, launch::Launcher, metadata::{items::{CurseforgeGetFilesMetadataItem, MinecraftVersionManifestMetadataItem}, manager::MetadataManager}, mod_metadata::ModMetadataManager, persistent::Persistent, skin_manager::SkinManager
 };
 
 fn build_http_clients(user_agent: &str, proxy_config: &ProxyConfig, proxy_password: Option<&str>) -> (reqwest::Client, reqwest::Client) {
@@ -146,7 +146,6 @@ pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHa
         login_semaphore: Arc::new(Semaphore::new(1)),
         cached_minecraft_profiles: Default::default(),
         skin_manager: Default::default(),
-        server_list_pinger: Arc::new(ServerListPinger::new()),
     };
 
     log::debug!("Doing initial backend load");
@@ -204,7 +203,6 @@ pub struct BackendState {
     pub login_semaphore: Arc<Semaphore>,
     pub cached_minecraft_profiles: Arc<RwLock<FxHashMap<Uuid, CachedMinecraftProfile>>>,
     pub skin_manager: Arc<RwLock<SkinManager>>,
-    pub server_list_pinger: Arc<ServerListPinger>,
 }
 
 pub struct CachedMinecraftProfile {
@@ -376,7 +374,6 @@ impl BackendState {
                 root_path: instance.resolve_real_root_path(),
                 dot_minecraft_folder: instance.dot_minecraft_path.clone(),
                 configuration: instance.configuration.get().clone(),
-                playtime: instance.playtime(),
                 worlds_state: instance.worlds_state.clone(),
                 servers_state: instance.servers_state.clone(),
                 mods_state: instance.content_state[ContentFolder::Mods].load_state.clone(),
@@ -427,27 +424,18 @@ impl BackendState {
 
         let mut instance_state = self.instance_state.write();
         for instance in instance_state.instances.iter_mut() {
-            let mut killed = false;
+            let mut changed = false;
             instance.processes.retain_mut(|child| {
                 if matches!(child.try_wait(), Ok(None)) {
                     true
                 } else {
                     log::debug!("Child process {} is no longer alive", child.id());
-                    killed = true;
+                    changed = true;
                     false
                 }
             });
-
-            if killed {
-                instance.update_session();
+            if changed {
                 self.send.send(instance.create_modify_message());
-            } else if let Some(launch_keepalive) = &instance.launch_keepalive && !launch_keepalive.is_alive() {
-                self.send.send(instance.create_modify_message());
-            } else if instance.has_active_session() {
-                self.send.send(MessageToFrontend::InstancePlaytimeUpdated {
-                    id: instance.id,
-                    playtime: instance.playtime(),
-                });
             }
         }
     }
@@ -1157,6 +1145,7 @@ impl BackendStateFileWatching {
         };
 
         let canonical: Arc<Path> = if canonical == &*path {
+            log::debug!("Watching {:?} as {:?}", path, target);
             path.clone()
         } else {
             let is_just_long_path_prefixed = if cfg!(windows) {
@@ -1169,8 +1158,10 @@ impl BackendStateFileWatching {
                 false
             };
             if is_just_long_path_prefixed {
+                log::debug!("Watching {:?} as {:?}", path, target);
                 path.clone()
             } else {
+                log::debug!("Watching {:?} (real path {:?}) as {:?}", path, canonical, target);
                 canonical.into()
             }
         };
@@ -1180,12 +1171,6 @@ impl BackendStateFileWatching {
             if old_canonical == canonical {
                 return;
             }
-        }
-
-        if path == canonical {
-            log::debug!("Watching {:?} as {:?}", path, target);
-        } else {
-            log::debug!("Watching {:?} (real path {:?}) as {:?}", path, canonical, target);
         }
 
         if let Err(err) = self.watcher.watch(&path, notify::RecursiveMode::NonRecursive) {

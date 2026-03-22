@@ -1,13 +1,13 @@
 use std::{path::{Path, PathBuf}, sync::Arc};
 
 use auth::{credentials::AccountCredentials, models::{TokenWithExpiry, XstsToken}, secret::PlatformSecretStorage};
-use bridge::{import::ImportFromOtherLauncherJob, modal_action::{ModalAction, ProgressTracker}};
+use bridge::modal_action::{ModalAction, ProgressTracker};
 use chrono::DateTime;
 use schema::{instance::{InstanceConfiguration, LwjglLibraryPath}, loader::Loader};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{BackendState, account::BackendAccount, instance::InstanceStats};
+use crate::{BackendState, account::BackendAccount};
 
 
 #[derive(Deserialize)]
@@ -21,7 +21,7 @@ struct MMCPackComponent {
     version: Arc<str>,
 }
 
-pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<(InstanceConfiguration, InstanceStats)> {
+pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<InstanceConfiguration> {
     let mmc_pack_bytes = std::fs::read(mmc_pack).ok()?;
     let instance_cfg_str = std::fs::read_to_string(instance_cfg).ok()?;
 
@@ -43,11 +43,9 @@ pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<(In
     }
 
     let mut configuration = InstanceConfiguration::new(minecraft_version?, loader.unwrap_or(Loader::Vanilla));
-    let mut stats = InstanceStats::default();
 
     let mut override_native_workarounds = false;
     let mut override_performance = false;
-    let mut override_account = (false, None);
 
     let mut section = None;
     for line in instance_cfg_str.split(|v| v == '\n') {
@@ -173,27 +171,6 @@ pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<(In
                         };
                         configuration.linux_wrapper.get_or_insert_default().use_discrete_gpu = enabled;
                     },
-                    (Some("[General]"), "UseAccountForInstance") => {
-                        let Ok(enabled) = value.parse::<bool>() else {
-                            continue;
-                        };
-                        override_account.0 = enabled;
-                    },
-                    (Some("[General]"), "InstanceAccountId") => {
-                        override_account.1 = value.parse::<Uuid>().ok();
-                    },
-                    (Some("[General]"), "totalTimePlayed") => {
-                        let Ok(time_played) = value.parse::<u64>() else {
-                            continue;
-                        };
-                        stats.total_playtime_secs = time_played;
-                    },
-                    (Some("[General]"), "lastLaunchTime") => {
-                        let Ok(last_launcher_time) = value.parse::<i64>() else {
-                            continue;
-                        };
-                        stats.last_played_unix_ms = Some(last_launcher_time);
-                    }
                     _ => {}
                 }
             }
@@ -207,12 +184,9 @@ pub fn try_load_from_multimc(instance_cfg: &Path, mmc_pack: &Path) -> Option<(In
         configuration.linux_wrapper = None;
     }
 
-    if override_account.0 {
-        configuration.preferred_account = override_account.1;
-    }
-
-    Some((configuration, stats))
+    Some(configuration)
 }
+
 
 #[derive(Deserialize, Debug)]
 struct MultiMCAccountsJson {
@@ -258,21 +232,21 @@ struct MultiMCAccountTokenExtra {
     uhs: Option<Arc<str>>,
 }
 
-pub async fn import_from_multimc(backend: &BackendState, import_job: ImportFromOtherLauncherJob, modal_action: ModalAction) {
-    import_accounts_from_multimc(backend, &import_job, &modal_action).await;
-    import_instances_from_multimc(backend, &import_job, &modal_action);
+pub async fn import_from_multimc(backend: &BackendState, path: &Path, import_accounts: bool, import_instances: bool, modal_action: ModalAction) {
+    if import_accounts {
+        import_accounts_from_multimc(backend, path, &modal_action).await;
+    }
+    if import_instances {
+        import_instances_from_multimc(backend, path, &modal_action);
+    }
 }
 
-async fn import_accounts_from_multimc(backend: &BackendState, import_job: &ImportFromOtherLauncherJob, modal_action: &ModalAction) {
-    if !import_job.import_accounts {
-        return;
-    }
-
+async fn import_accounts_from_multimc(backend: &BackendState, path: &Path, modal_action: &ModalAction) {
     let tracker = ProgressTracker::new("Reading accounts.json".into(), backend.send.clone());
     modal_action.trackers.push(tracker.clone());
     tracker.notify();
 
-    let accounts_path = import_job.root.join("accounts.json");
+    let accounts_path = path.join("accounts.json");
     let Ok(accounts_bytes) = std::fs::read(&accounts_path) else {
         return;
     };
@@ -401,21 +375,27 @@ struct MultiMCInstanceToImport {
     pandora_path: PathBuf,
     multimc_instance_cfg: PathBuf,
     multimc_mmc_pack: PathBuf,
-    folder: Arc<Path>,
+    folder: PathBuf,
 }
 
-fn import_instances_from_multimc(backend: &BackendState, import_job: &ImportFromOtherLauncherJob, modal_action: &ModalAction) {
-    if import_job.paths.is_empty() {
-        return;
-    }
-
+fn import_instances_from_multimc(backend: &BackendState, path: &Path, modal_action: &ModalAction) {
     let all_tracker = ProgressTracker::new("Importing instances".into(), backend.send.clone());
     modal_action.trackers.push(all_tracker.clone());
     all_tracker.notify();
 
+    let Ok(read_dir) = std::fs::read_dir(path.join("instances")) else {
+        all_tracker.set_finished(bridge::modal_action::ProgressTrackerFinishType::Error);
+        all_tracker.notify();
+        return;
+    };
+
     let mut to_import = Vec::new();
 
-    for folder in import_job.paths.iter() {
+    for entry in read_dir {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let folder = entry.path();
         if !folder.is_dir() {
             continue;
         }
@@ -439,7 +419,7 @@ fn import_instances_from_multimc(backend: &BackendState, import_job: &ImportFrom
             pandora_path,
             multimc_instance_cfg,
             multimc_mmc_pack,
-            folder: folder.clone(),
+            folder,
         });
     }
 
@@ -451,7 +431,7 @@ fn import_instances_from_multimc(backend: &BackendState, import_job: &ImportFrom
         modal_action.trackers.push(tracker.clone());
         tracker.notify();
 
-        let Some((configuration, stats)) = try_load_from_multimc(&to_import.multimc_instance_cfg, &to_import.multimc_mmc_pack) else {
+        let Some(configuration) = try_load_from_multimc(&to_import.multimc_instance_cfg, &to_import.multimc_mmc_pack) else {
             tracker.set_finished(bridge::modal_action::ProgressTrackerFinishType::Error);
             tracker.notify();
             continue;
@@ -468,19 +448,20 @@ fn import_instances_from_multimc(backend: &BackendState, import_job: &ImportFrom
         let mmc_dot_minecraft = to_import.folder.join(".minecraft");
         let mmc_minecraft = to_import.folder.join("minecraft");
         let target_dot_minecraft = to_import.pandora_path.join(".minecraft");
+        let copy_options = fs_extra::dir::CopyOptions::default().copy_inside(true);
         if mmc_minecraft.exists() {
-            _ = std::fs::create_dir_all(&target_dot_minecraft);
-            _ = crate::copy_content_recursive(&mmc_minecraft, &target_dot_minecraft, false, &|copied, total| {
-                tracker.set_total(total as usize);
-                tracker.set_count(copied as usize);
+            _ = fs_extra::dir::copy_with_progress(mmc_minecraft, target_dot_minecraft, &copy_options, |state| {
+                tracker.set_total(state.total_bytes as usize);
+                tracker.set_count(state.copied_bytes as usize);
                 tracker.notify();
+                fs_extra::dir::TransitProcessResult::ContinueOrAbort
             });
         } else if mmc_dot_minecraft.exists() {
-            _ = std::fs::create_dir_all(&target_dot_minecraft);
-            _ = crate::copy_content_recursive(&mmc_dot_minecraft, &target_dot_minecraft, false, &|copied, total| {
-                tracker.set_total(total as usize);
-                tracker.set_count(copied as usize);
+            _ = fs_extra::dir::copy_with_progress(mmc_dot_minecraft, target_dot_minecraft, &copy_options, |state| {
+                tracker.set_total(state.total_bytes as usize);
+                tracker.set_count(state.copied_bytes as usize);
                 tracker.notify();
+                fs_extra::dir::TransitProcessResult::ContinueOrAbort
             });
         }
 
@@ -490,14 +471,6 @@ fn import_instances_from_multimc(backend: &BackendState, import_job: &ImportFrom
         // Write info_v1.json
         let info_path = to_import.pandora_path.join("info_v1.json");
         _ = crate::write_safe(&info_path, &configuration_bytes);
-
-        // Write stats_v1.json if we have some stats
-        if stats != InstanceStats::default() {
-            let stats_path = to_import.pandora_path.join("stats_v1.json");
-            if let Ok(stats_bytes) = serde_json::to_vec(&stats) {
-                _ = crate::write_safe(&stats_path, &stats_bytes);
-            }
-        }
 
         all_tracker.add_count(1);
         all_tracker.notify();

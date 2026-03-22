@@ -81,7 +81,7 @@ impl ContentListDelegate {
         let (desc1, desc2) = create_descriptions(summary.content_summary.name.clone(),
             summary.content_summary.version_str.clone(), summary.content_summary.authors.clone(),
             summary.content_summary.rich_description.clone(),
-            !summary.enabled, summary.filename.clone(), cx.theme().muted_foreground);
+            summary.filename.clone(), cx.theme().muted_foreground);
 
         let id = self.id;
         let content_id = summary.id;
@@ -136,7 +136,7 @@ impl ContentListDelegate {
             }))
         };
 
-        let status = summary.update.status_if_matches(self.for_loader, self.for_version.as_str());
+        let status = summary.update.status_if_matches(self.for_loader, self.for_version);
         let update_button = match status {
             bridge::instance::ContentUpdateStatus::Unknown => None,
             bridge::instance::ContentUpdateStatus::ManualInstall => Some(
@@ -176,7 +176,7 @@ impl ContentListDelegate {
                                 let delegate = this.delegate_mut();
                                 if delegate.is_selected(element_id) {
                                     for summary in &delegate.content {
-                                        if delegate.is_selected(summary.filename_hash) && summary.update.can_update(delegate.for_loader, delegate.for_version.as_str()) {
+                                        if delegate.is_selected(summary.filename_hash) && summary.update.can_update(delegate.for_loader, delegate.for_version) {
                                             updating.insert(summary.filename_hash);
                                             crate::root::update_single_mod(id, summary.id, &backend_handle, window, cx);
                                         }
@@ -198,33 +198,30 @@ impl ContentListDelegate {
 
         let toggle_control = Switch::new(("toggle", element_id))
             .checked(summary.enabled)
-            .disabled(!summary.can_toggle)
-            .when(summary.can_toggle, |this| {
-                this.on_click(cx.listener(move |this, checked, _, _| {
-                    let delegate = this.delegate();
-                    if delegate.is_selected(element_id) {
-                        let content_ids = delegate.content.iter().filter_map(|summary| {
-                            if delegate.is_selected(summary.filename_hash) {
-                                Some(summary.id)
-                            } else {
-                                None
-                            }
-                        }).collect();
+            .on_click(cx.listener(move |this, checked, _, _| {
+                let delegate = this.delegate();
+                if delegate.is_selected(element_id) {
+                    let content_ids = delegate.content.iter().filter_map(|summary| {
+                        if delegate.is_selected(summary.filename_hash) {
+                            Some(summary.id)
+                        } else {
+                            None
+                        }
+                    }).collect();
 
-                        backend_handle.send(MessageToBackend::SetContentEnabled {
-                            id,
-                            content_ids,
-                            enabled: *checked,
-                        });
-                    } else {
-                        backend_handle.send(MessageToBackend::SetContentEnabled {
-                            id,
-                            content_ids: vec![content_id],
-                            enabled: *checked,
-                        });
-                    }
-                }))
-            })
+                    backend_handle.send(MessageToBackend::SetContentEnabled {
+                        id,
+                        content_ids,
+                        enabled: *checked,
+                    });
+                } else {
+                    backend_handle.send(MessageToBackend::SetContentEnabled {
+                        id,
+                        content_ids: vec![content_id],
+                        enabled: *checked,
+                    });
+                }
+            }))
             .px_2();
 
         let controls = if !can_expand {
@@ -362,6 +359,10 @@ impl ContentListDelegate {
             gpui::img(ImageSource::Resource(Resource::Embedded("images/default_mod.png".into())))
         };
 
+        let (desc1, desc2) = create_descriptions(summary.name.clone(),
+            summary.version_str.clone(), summary.authors.clone(), summary.rich_description.clone(),
+            child.path.clone(), cx.theme().muted_foreground);
+
         let mut hasher = DefaultHasher::new();
         child.parent_filename_hash.hash(&mut hasher);
         child.path.hash(&mut hasher);
@@ -369,10 +370,6 @@ impl ContentListDelegate {
 
         let enabled = child.enabled;
         let visually_enabled = enabled && child.parent_enabled && !child.disabled_third_party_downloads;
-
-        let (desc1, desc2) = create_descriptions(summary.name.clone(),
-            summary.version_str.clone(), summary.authors.clone(), summary.rich_description.clone(),
-            !visually_enabled, child.path.clone(), cx.theme().muted_foreground);
 
         let mut item_content = h_flex()
             .gap_1()
@@ -677,10 +674,48 @@ impl ListDelegate for ContentListDelegate {
     }
 }
 
-fn create_descriptions(name: Option<Arc<str>>, version: Arc<str>, authors: Arc<str>, rich_description: Option<Arc<FlatTextComponent>>, grayscale: bool, filename: Arc<str>, secondary: Hsla) -> (Div, Option<Div>) {
+fn create_descriptions(name: Option<Arc<str>>, version: Arc<str>, authors: Arc<str>, rich_description: Option<Arc<FlatTextComponent>>, filename: Arc<str>, secondary: Hsla) -> (Div, Option<Div>) {
     if name.is_none() && authors.is_empty() {
         if let Some(rich_description) = rich_description {
-            let styled_text = super::create_styled_text(&*rich_description, grayscale);
+            let styled_text = StyledText::new(&rich_description.content)
+                .with_highlights(rich_description.runs.iter().map(|run| {
+                    (
+                        run.range.clone(),
+                        HighlightStyle {
+                            color: run.style.colour.map(|rgb| gpui::rgb(rgb).into()),
+                            font_weight: run.style.bold.map(|bold| {
+                                if bold {
+                                    FontWeight::BOLD
+                                } else {
+                                    FontWeight::NORMAL
+                                }
+                            }),
+                            font_style: run.style.italic.map(|italic| {
+                                if italic {
+                                    FontStyle::Normal
+                                } else {
+                                    FontStyle::Italic
+                                }
+                            }),
+                            background_color: None,
+                            underline: run.style.underlined.map(|underline| {
+                                if underline {
+                                    UnderlineStyle::default()
+                                } else {
+                                    UnderlineStyle { thickness: px(1.0), ..Default::default() }
+                                }
+                            }),
+                            strikethrough: run.style.strikethrough.map(|strikethrough| {
+                                if strikethrough {
+                                    StrikethroughStyle::default()
+                                } else {
+                                    StrikethroughStyle { thickness: px(1.0), ..Default::default() }
+                                }
+                            }),
+                            fade_out: None,
+                        }
+                    )
+                }));
 
             let description1 = v_flex()
                 .min_w_2_5()
@@ -689,7 +724,7 @@ fn create_descriptions(name: Option<Arc<str>>, version: Arc<str>, authors: Arc<s
                 .overflow_x_hidden()
                 .line_height(relative(1.0))
                 .child(SharedString::from(filename))
-                .child(div().line_clamp(2).child(styled_text));
+                .child(styled_text);
             return (description1, None);
         }
 
