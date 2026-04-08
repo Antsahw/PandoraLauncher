@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use strum::EnumIter;
 use ustr::Ustr;
 
 pub const CURSEFORGE_SEARCH_URL: &str = "https://api.curseforge.com/v1/mods/search";
@@ -18,6 +19,7 @@ pub struct CurseforgeSearchRequest {
     pub search_filter: Option<Arc<str>>,
     #[serde(skip_serializing_if = "crate::skip_if_none")]
     pub mod_loader_types: Option<Arc<str>>,
+    pub sort_field: u32,
     pub index: u32,
     pub page_size: u32,
 }
@@ -208,6 +210,27 @@ impl CurseforgeModLoaderType {
     }
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, EnumIter)]
+#[repr(u32)]
+pub enum CurseforgeSortField {
+    Popularity = 2,
+    Downloads = 6,
+    LastUpdated = 3,
+    Name = 4,
+    Author = 5,
+}
+
+impl CurseforgeSortField {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Popularity => "popularity",
+            Self::Downloads => "downloads",
+            Self::LastUpdated => "updated",
+            Self::Name => "name",
+            Self::Author => "author",
+        }
+    }
+}
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Debug)]
 #[serde(rename_all = "lowercase")]
