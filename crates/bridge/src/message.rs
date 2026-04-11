@@ -36,6 +36,30 @@ pub enum MessageToBackend {
         loader: Loader,
         icon: Option<EmbeddedOrRaw>,
     },
+    CreateServer {
+        name: Ustr,
+        version: Ustr,
+        server_software: Ustr,
+        icon: Option<EmbeddedOrRaw>,
+    },
+    StartServer {
+        name: Ustr,
+        modal_action: ModalAction,
+    },
+    StopServer {
+        name: Ustr,
+    },
+    DeleteServer {
+        name: Ustr,
+    },
+    RenameServer {
+        old_name: Ustr,
+        new_name: Ustr,
+    },
+    SendServerCommand {
+        name: Ustr,
+        command: Ustr,
+    },
     DeleteInstance {
         id: InstanceID,
     },

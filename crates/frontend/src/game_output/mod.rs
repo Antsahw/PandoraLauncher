@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, num::NonZeroUsize, ops::Range, rc::Rc, sync::Arc};
+use std::{cell::RefCell, num::NonZeroUsize, ops::Range, rc::Rc, sync::Arc};
 
 use ftree::FenwickTree;
 use gpui::{prelude::*, *};
@@ -7,8 +7,9 @@ use gpui_component::{
 };
 use lru::LruCache;
 use rustc_hash::FxBuildHasher;
+use open;
 
-use bridge::{game_output::GameOutputLogLevel, keep_alive::KeepAlive};
+use bridge::{game_output::GameOutputLogLevel, handle::BackendHandle, instance::{InstanceID, InstanceStatus}, keep_alive::{KeepAlive, KeepAliveHandle}, message::MessageToBackend};
 
 use crate::{CloseWindow, icon::PandoraIcon, interface_config::InterfaceConfig, ts};
 
@@ -855,6 +856,7 @@ pub struct GameOutputRoot {
     _keep_alive: KeepAlive,
     pub game_output: Entity<GameOutput>,
     search_state: Entity<InputState>,
+    server_command_state: Option<Entity<InputState>>,
     _search_task: Task<()>,
     _search_input_subscription: Subscription,
     focus_handle: FocusHandle,
@@ -863,6 +865,13 @@ pub struct GameOutputRoot {
     pub active_instance_id: Option<usize>,
     pub tabs: std::collections::HashMap<usize, Entity<GameOutput>>,
     pub instance_names: std::collections::HashMap<usize, SharedString>,
+    pub instance_folders: std::collections::HashMap<usize, Arc<std::path::Path>>,
+    pub dot_minecraft_folders: std::collections::HashMap<usize, Arc<std::path::Path>>,
+    pub instance_keep_alives: std::collections::HashMap<usize, KeepAliveHandle>,
+    instance_ids: std::collections::HashMap<usize, InstanceID>,
+    instance_statuses: std::collections::HashMap<InstanceID, InstanceStatus>,
+    server_names: std::collections::HashMap<usize, String>,
+    backend_handle: BackendHandle,
 }
 
 #[derive(Clone)]
@@ -970,6 +979,7 @@ impl GameOutputRoot {
     pub fn new(
         keep_alive: KeepAlive,
         game_output: Entity<GameOutput>,
+        backend_handle: BackendHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1026,6 +1036,7 @@ impl GameOutputRoot {
             _keep_alive: keep_alive,
             game_output,
             search_state,
+            server_command_state: None,
             _search_task: Task::ready(()),
             _search_input_subscription,
             focus_handle,
@@ -1033,14 +1044,25 @@ impl GameOutputRoot {
             active_instance_id: None,
             tabs: std::collections::HashMap::new(),
             instance_names: std::collections::HashMap::new(),
+            instance_folders: std::collections::HashMap::new(),
+            dot_minecraft_folders: std::collections::HashMap::new(),
+            instance_keep_alives: std::collections::HashMap::new(),
+            instance_ids: std::collections::HashMap::new(),
+            instance_statuses: std::collections::HashMap::new(),
+            server_names: std::collections::HashMap::new(),
+            backend_handle,
         }
     }
 
     pub fn new_tabbed(
-        instance_id: usize,
+        output_id: usize,
+        instance_id: InstanceID,
         instance_name: SharedString,
+        instance_folder: Arc<std::path::Path>,
+        dot_minecraft_folder: Arc<std::path::Path>,
         keep_alive: KeepAlive,
         game_output: Entity<GameOutput>,
+        backend_handle: BackendHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1090,43 +1112,82 @@ impl GameOutputRoot {
         }).detach();
 
         let mut tabs = std::collections::HashMap::new();
-        tabs.insert(instance_id, game_output.clone());
+        tabs.insert(output_id, game_output.clone());
         
         let mut instance_names = std::collections::HashMap::new();
-        instance_names.insert(instance_id, instance_name);
+        instance_names.insert(output_id, instance_name.clone());
+        
+        let mut instance_folders = std::collections::HashMap::new();
+        instance_folders.insert(output_id, instance_folder);
+        
+        let mut dot_minecraft_folders = std::collections::HashMap::new();
+        dot_minecraft_folders.insert(output_id, dot_minecraft_folder);
+        
+        let mut instance_keep_alives = std::collections::HashMap::new();
+        instance_keep_alives.insert(output_id, keep_alive.create_handle());
+        
+        let mut instance_ids = std::collections::HashMap::new();
+        instance_ids.insert(output_id, instance_id);
+
+        let mut server_names = std::collections::HashMap::new();
+        // If instance_id is dangling, it's a server
+        if instance_id == bridge::instance::InstanceID::dangling() {
+            server_names.insert(output_id, instance_name.to_string());
+        }
 
         Self {
             scroll_handler: ScrollHandler { state: scroll_state },
             _keep_alive: keep_alive,
             game_output,
             search_state,
+            server_command_state: None,
             _search_task: Task::ready(()),
             _search_input_subscription,
             focus_handle,
             is_tabbed: true,
-            active_instance_id: Some(instance_id),
+            active_instance_id: Some(output_id),
             tabs,
             instance_names,
+            instance_folders,
+            dot_minecraft_folders,
+            instance_keep_alives,
+            instance_ids,
+            instance_statuses: std::collections::HashMap::new(),
+            server_names,
+            backend_handle,
         }
     }
 
     pub fn create_or_switch_tab(
         &mut self,
-        instance_id: usize,
+        output_id: usize,
+        instance_id: InstanceID,
         instance_name: SharedString,
+        instance_folder: Arc<std::path::Path>,
+        dot_minecraft_folder: Arc<std::path::Path>,
         game_output: Entity<GameOutput>,
+        keep_alive_handle: KeepAliveHandle,
         cx: &mut Context<Self>,
     ) {
         // Check if tab already exists
-        if !self.tabs.contains_key(&instance_id) {
+        if !self.tabs.contains_key(&output_id) {
             // Create new tab
-            self.tabs.insert(instance_id, game_output.clone());
-            self.instance_names.insert(instance_id, instance_name);
+            self.tabs.insert(output_id, game_output.clone());
+            self.instance_names.insert(output_id, instance_name.clone());
+            self.instance_folders.insert(output_id, instance_folder);
+            self.dot_minecraft_folders.insert(output_id, dot_minecraft_folder);
+            self.instance_keep_alives.insert(output_id, keep_alive_handle);
+            self.instance_ids.insert(output_id, instance_id);
+            
+            // If instance_id is dangling, it's a server
+            if instance_id == bridge::instance::InstanceID::dangling() {
+                self.server_names.insert(output_id, instance_name.to_string());
+            }
         }
         
         // Switch to this tab
-        self.active_instance_id = Some(instance_id);
-        if let Some(game_output_entity) = self.tabs.get(&instance_id) {
+        self.active_instance_id = Some(output_id);
+        if let Some(game_output_entity) = self.tabs.get(&output_id) {
             self.game_output = game_output_entity.clone();
             let scroll_state = Rc::clone(&self.game_output.read(cx).scroll_state);
             self.scroll_handler = ScrollHandler { state: scroll_state };
@@ -1147,6 +1208,10 @@ impl GameOutputRoot {
                 game_output.add(time, level, text);
             });
         }
+    }
+
+    pub fn update_instance_status(&mut self, instance_id: InstanceID, status: InstanceStatus) {
+        self.instance_statuses.insert(instance_id, status);
     }
 
     fn on_search_input_event(
@@ -1260,7 +1325,6 @@ impl Render for GameOutputRoot {
                 state.scrolling = GameOutputScrolling::Bottom;
                 cx.notify();
             })))
-            .child(Button::new("upload").label(ts!("instance.logs.upload.label")))
             .child(Button::new("clear").label("Clear").on_click(cx.listener(|root, _, _, cx| {
                 root.game_output.update(cx, |game_output, _| {
                     game_output.clear();
@@ -1271,6 +1335,74 @@ impl Render for GameOutputRoot {
                 let logs = root.game_output.read(cx).collect_logs();
                 cx.write_to_clipboard(logs.into());
             })));
+
+        // Build bottom bar with kill button (only if instance is running)
+        let mut bottom_bar = h_flex()
+            .w_full()
+            .justify_end()
+            .px_2()
+            .py_2()
+            .gap_2();
+
+        // Always add folder and kill buttons in order: instance folder, minecraft folder, kill
+        if let Some(active_id) = self.active_instance_id {
+            if let Some(instance_id) = self.instance_ids.get(&active_id).copied() {
+                // Create button container
+                let mut action_buttons = h_flex()
+                    .gap_1();
+                
+                // Add .minecraft folder button
+                if let Some(dot_minecraft_path) = self.dot_minecraft_folders.get(&active_id) {
+                    let minecraft_path = dot_minecraft_path.clone();
+                    let minecraft_btn = Button::new("open_minecraft")
+                        .icon(PandoraIcon::Folder)
+                        .on_click(cx.listener(move |_, _, _, _| {
+                            let _ = open::that(minecraft_path.as_ref());
+                        }))
+                        .p_1()
+                        .h(px(24.0));
+                    
+                    action_buttons = action_buttons.child(minecraft_btn);
+                }
+                
+                // Add kill button last
+                let is_instance_running = self.active_instance_id
+                    .and_then(|output_id| self.instance_ids.get(&output_id))
+                    .and_then(|instance_id| self.instance_statuses.get(instance_id))
+                    .map(|status| *status == InstanceStatus::Running)
+                    .unwrap_or(false);
+                
+                let is_server = self.active_instance_id
+                    .and_then(|output_id| self.server_names.get(&output_id))
+                    .is_some();
+                
+                let mut kill_btn = Button::new("kill_instance")
+                    .icon(PandoraIcon::Close)
+                    .label("Kill")
+                    .p_1()
+                    .h(px(24.0));
+                
+                if is_instance_running {
+                    kill_btn = kill_btn.on_click(cx.listener(move |root, _, _, _cx| {
+                        // Send kill instance message to backend
+                        root.backend_handle.send(MessageToBackend::KillInstance { id: instance_id });
+                    }));
+                } else if is_server {
+                    kill_btn = kill_btn.on_click(cx.listener(move |root, _, _, _cx| {
+                        // Send stop server message to backend
+                        if let Some(server_name) = root.active_instance_id
+                            .and_then(|output_id| root.server_names.get(&output_id))
+                            .cloned()
+                        {
+                            root.backend_handle.send(MessageToBackend::StopServer { name: server_name.into() });
+                        }
+                    }));
+                }
+                
+                action_buttons = action_buttons.child(kill_btn);
+                bottom_bar = bottom_bar.child(action_buttons);
+            }
+        }
 
         // Build tab bar if in tabbed mode
         let mut tab_bar = h_flex()
@@ -1369,6 +1501,20 @@ impl Render for GameOutputRoot {
 
         // Add main content area last
         inner = inner.child(main_output);
+
+        // Add bottom bar with kill button (only if instance is active)
+        if self.active_instance_id.is_some() {
+            let bottom_with_separator = v_flex()
+                .w_full()
+                .child(
+                    div()
+                        .w_full()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                )
+                .child(bottom_bar);
+            inner = inner.child(bottom_with_separator);
+        }
 
         // Wrap everything in a single border
         let content_area = v_flex()

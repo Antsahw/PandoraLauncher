@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::{
     component::{menu::{MenuGroup, MenuGroupItem}, page_path::PagePath, resize_panel::{ResizePanel, ResizePanelState}, shrinking_text::ShrinkingText, title_bar::TitleBar}, entity::{
         DataEntities, instance::{InstanceAddedEvent, InstanceEntries, InstanceModifiedEvent, InstanceMovedToTopEvent, InstanceRemovedEvent}
-    }, icon::PandoraIcon, interface_config::InterfaceConfig, modals, pages::{curseforge_page::CurseforgeSearchPage, import::ImportPage, instance::instance_page::InstancePage, instances_page::InstancesPage, modrinth_page::ModrinthSearchPage, modrinth_project_page::ModrinthProjectPage, page::Page, skins_page::SkinsPage, syncing_page::SyncingPage}, png_render_cache, ts
+    }, icon::PandoraIcon, interface_config::InterfaceConfig, modals, pages::{curseforge_page::CurseforgeSearchPage, import::ImportPage, instance::{instance_page::InstancePage, server_page::ServerPage}, instances_page::InstancesPage, servers_page::ServersPage, modrinth_page::ModrinthSearchPage, modrinth_project_page::ModrinthProjectPage, page::Page, skins_page::SkinsPage, syncing_page::SyncingPage}, png_render_cache, ts
 };
 
 pub struct LauncherUI {
@@ -35,6 +35,7 @@ pub struct LauncherUI {
 pub enum PageType {
     #[default]
     Instances,
+    Servers,
     Skins,
     Modrinth {
         installing_for: Option<SharedString>,
@@ -52,12 +53,16 @@ pub enum PageType {
     InstancePage {
         name: SharedString,
     },
+    ServerPage {
+        name: SharedString,
+    },
 }
 
 impl PageType {
     pub fn title(&self, data: &DataEntities, cx: &App) -> SharedString {
         match self {
             PageType::Instances => ts!("instance.title"),
+            PageType::Servers => "Servers".into(),
             PageType::Skins => ts!("skins.title"),
             PageType::Modrinth { installing_for } => {
                 if installing_for.is_some() {
@@ -80,6 +85,7 @@ impl PageType {
                 InstanceEntries::find_title_by_name(&data.instances, name, cx)
                     .unwrap_or_else(|| name.clone())
             },
+            PageType::ServerPage { name } => name.clone(),
         }
     }
 }
@@ -87,6 +93,7 @@ impl PageType {
 #[derive(Clone)]
 pub enum LauncherPage {
     Instances(Entity<InstancesPage>),
+    Servers(Entity<ServersPage>),
     Skins(Entity<SkinsPage>),
     Modrinth(Entity<ModrinthSearchPage>),
     Curseforge(Entity<CurseforgeSearchPage>),
@@ -94,6 +101,7 @@ pub enum LauncherPage {
     Syncing(Entity<SyncingPage>),
     ModrinthProject(Entity<ModrinthProjectPage>),
     InstancePage(Entity<InstancePage>),
+    ServerPage(Entity<ServerPage>),
 }
 
 impl LauncherPage {
@@ -106,6 +114,7 @@ impl LauncherPage {
 
         let (scrollable, controls, page) = match self {
             LauncherPage::Instances(entity) => process(entity, window, cx),
+            LauncherPage::Servers(entity) => process(entity, window, cx),
             LauncherPage::Skins(entity) => process(entity, window, cx),
             LauncherPage::Modrinth(entity) => process(entity, window, cx),
             LauncherPage::Curseforge(entity) => process(entity, window, cx),
@@ -113,6 +122,7 @@ impl LauncherPage {
             LauncherPage::Syncing(entity) => process(entity, window, cx),
             LauncherPage::ModrinthProject(entity) => process(entity, window, cx),
             LauncherPage::InstancePage(entity) => process(entity, window, cx),
+            LauncherPage::ServerPage(entity) => process(entity, window, cx),
         };
 
         let config = InterfaceConfig::get(cx);
@@ -243,6 +253,9 @@ impl LauncherUI {
             PageType::Instances => {
                 Ok(LauncherPage::Instances(cx.new(|cx| InstancesPage::new(data, window, cx))))
             },
+            PageType::Servers => {
+                Ok(LauncherPage::Servers(cx.new(|cx| ServersPage::new(data, window, cx))))
+            },
             PageType::Skins => {
                 Ok(LauncherPage::Skins(cx.new(|cx| SkinsPage::new(data, window, cx))))
             },
@@ -284,6 +297,11 @@ impl LauncherUI {
 
                 Ok(LauncherPage::InstancePage(cx.new(|cx| {
                     InstancePage::new(id, data, window, cx)
+                })))
+            },
+            PageType::ServerPage { ref name } => {
+                Ok(LauncherPage::ServerPage(cx.new(|cx| {
+                    ServerPage::new(name.clone(), data, window, cx)
                 })))
             },
         }
@@ -335,6 +353,11 @@ impl Render for LauncherUI {
                 .active(page_type == PageType::Instances)
                 .on_click(cx.listener(|launcher, _, window, cx| {
                     launcher.switch_page(PageType::Instances, &[], window, cx);
+                })))
+            .child(MenuGroupItem::new("Servers")
+                .active(page_type == PageType::Servers)
+                .on_click(cx.listener(|launcher, _, window, cx| {
+                    launcher.switch_page(PageType::Servers, &[], window, cx);
                 })))
             .child(MenuGroupItem::new(ts!("skins.title"))
                 .active(page_type == PageType::Skins)

@@ -80,6 +80,20 @@ impl InstanceEntries {
         None
     }
 
+    pub fn find_root_path_by_id(entity: &Entity<Self>, id: InstanceID, cx: &App) -> Option<Arc<Path>> {
+        if let Some(entry) = entity.read(cx).entries.get(&id) {
+            return Some(entry.read(cx).root_path.clone())
+        }
+        None
+    }
+
+    pub fn find_dot_minecraft_by_id(entity: &Entity<Self>, id: InstanceID, cx: &App) -> Option<Arc<Path>> {
+        if let Some(entry) = entity.read(cx).entries.get(&id) {
+            return Some(entry.read(cx).dot_minecraft_folder.clone())
+        }
+        None
+    }
+
     pub fn remove(entity: &Entity<Self>, id: InstanceID, cx: &mut App) {
         entity.update(cx, |entries, cx| {
             if let Some(_) = entries.entries.shift_remove(&id) {

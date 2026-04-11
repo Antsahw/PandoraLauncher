@@ -1,6 +1,6 @@
 use std::{collections::HashMap, rc::Rc, sync::{Arc, atomic::AtomicBool}};
 
-use bridge::{instance::InstanceStatus, message::{BridgeNotificationType, MessageToFrontend}};
+use bridge::{instance::InstanceStatus, keep_alive::KeepAliveHandle, message::{BridgeNotificationType, MessageToFrontend}};
 use gpui::{AnyWindowHandle, App, AppContext, Bounds, Entity, Point, SharedString, Size, TitlebarOptions, Window, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, px, size};
 use gpui_component::{notification::{Notification, NotificationType}, Root, WindowExt};
 
@@ -12,6 +12,8 @@ pub struct Processor {
     game_output_window: Option<WindowHandle<Root>>,
     game_output_tabs: HashMap<usize, Entity<GameOutput>>,
     game_output_names: HashMap<usize, SharedString>,
+    game_output_keep_alives: HashMap<usize, KeepAliveHandle>,
+    game_output_instance_ids: HashMap<usize, bridge::instance::InstanceID>,
     game_output_root: Option<Entity<GameOutputRoot>>,
     main_window_handle: Option<AnyWindowHandle>,
     main_window_hidden: Arc<AtomicBool>,
@@ -25,6 +27,8 @@ impl Processor {
             game_output_window: None,
             game_output_tabs: HashMap::new(),
             game_output_names: HashMap::new(),
+            game_output_keep_alives: HashMap::new(),
+            game_output_instance_ids: HashMap::new(),
             game_output_root: None,
             main_window_handle: None,
             main_window_hidden,
@@ -130,6 +134,13 @@ impl Processor {
                     status,
                     cx,
                 );
+                
+                // Notify GameOutputRoot of instance status change
+                if let Some(root_entity) = &self.game_output_root {
+                    root_entity.update(cx, |root, _| {
+                        root.update_instance_status(id, status);
+                    });
+                }
             },
             MessageToFrontend::InstanceWorldsUpdated { id, worlds } => {
                 InstanceEntries::set_worlds(&self.data.instances, id, worlds, cx);
@@ -181,6 +192,13 @@ impl Processor {
             MessageToFrontend::CreateGameOutputWindow { id, name, keep_alive } => {
                 let instance_name: SharedString = name.into();
                 self.game_output_names.insert(id, instance_name.clone());
+                let keep_alive_handle = keep_alive.create_handle();
+                self.game_output_keep_alives.insert(id, keep_alive_handle.clone());
+                
+                // Find the instance ID by name
+                if let Some(instance_id) = InstanceEntries::find_id_by_name(&self.data.instances, &instance_name, cx) {
+                    self.game_output_instance_ids.insert(id, instance_id);
+                }
                 
                 // Check if the window still exists - if not, clear the reference
                 let window_still_exists = if let Some(window_handle) = &self.game_output_window {
@@ -198,14 +216,14 @@ impl Processor {
                     // First instance - create the window
                     let window_bounds = match InterfaceConfig::get(cx).game_output_bounds {
                         crate::interface_config::WindowBounds::Inherit => None,
-                        crate::interface_config::WindowBounds::Windowed { w, h, .. } => {
-                            Some(WindowBounds::Windowed(Bounds::new(Point::new(px(0.0), px(0.0)), Size::new(px(w), px(h)))))
+                        crate::interface_config::WindowBounds::Windowed { x, y, w, h } => {
+                            Some(WindowBounds::Windowed(Bounds::new(Point::new(px(x), px(y)), Size::new(px(w), px(h)))))
                         },
-                        crate::interface_config::WindowBounds::Maximized { w, h, .. } => {
-                            Some(WindowBounds::Maximized(Bounds::new(Point::new(px(0.0), px(0.0)), Size::new(px(w), px(h)))))
+                        crate::interface_config::WindowBounds::Maximized { x, y, w, h } => {
+                            Some(WindowBounds::Maximized(Bounds::new(Point::new(px(x), px(y)), Size::new(px(w), px(h)))))
                         },
-                        crate::interface_config::WindowBounds::Fullscreen { w, h, .. } => {
-                            Some(WindowBounds::Fullscreen(Bounds::new(Point::new(px(0.0), px(0.0)), Size::new(px(w), px(h)))))
+                        crate::interface_config::WindowBounds::Fullscreen { x, y, w, h } => {
+                            Some(WindowBounds::Fullscreen(Bounds::new(Point::new(px(x), px(y)), Size::new(px(w), px(h)))))
                         },
                     };
 
@@ -225,11 +243,32 @@ impl Processor {
                     let game_output = cx.new(|_| GameOutput::default());
                     self.game_output_tabs.insert(id, game_output.clone());
                     
-                    let mut processor_ptr = self as *mut Processor;
+                    let processor_ptr = self as *mut Processor;
+                    let backend_handle = self.data.backend_handle.clone();
+                    let instance_id = self.game_output_instance_ids.get(&id).copied();
+                    let instance_root_path = if let Some(inst_id) = instance_id {
+                        InstanceEntries::find_root_path_by_id(&self.data.instances, inst_id, cx)
+                            .unwrap_or_else(|| Arc::from(std::path::Path::new(".")))
+                    } else {
+                        Arc::from(std::path::Path::new("."))
+                    };
+                    let dot_minecraft_path = if let Some(inst_id) = instance_id {
+                        InstanceEntries::find_dot_minecraft_by_id(&self.data.instances, inst_id, cx)
+                            .unwrap_or_else(|| Arc::from(std::path::Path::new(".")))
+                    } else {
+                        Arc::from(std::path::Path::new("."))
+                    };
                     _ = cx.open_window(options, move |window, cx| {
                         let window_handle = window.window_handle().downcast::<Root>().unwrap();
                         
-                        let game_output_root = cx.new(|cx| GameOutputRoot::new_tabbed(id, instance_name, keep_alive, game_output, window, cx));
+                        let game_output_root = cx.new(|cx| {
+                            if let Some(inst_id) = instance_id {
+                                GameOutputRoot::new_tabbed(id, inst_id, instance_name, instance_root_path.clone(), dot_minecraft_path.clone(), keep_alive, game_output, backend_handle.clone(), window, cx)
+                            } else {
+                                // Fallback if instance ID not found (shouldn't happen)
+                                GameOutputRoot::new_tabbed(id, bridge::instance::InstanceID::dangling(), instance_name, instance_root_path.clone(), dot_minecraft_path.clone(), keep_alive, game_output, backend_handle.clone(), window, cx)
+                            }
+                        });
                         window.activate_window();
                         
                         // Store window handle and root entity in processor
@@ -247,9 +286,15 @@ impl Processor {
                     
                     // Tell the GameOutputRoot to add this new tab
                     if let Some(root_entity) = &self.game_output_root {
-                        root_entity.update(cx, |root, cx| {
-                            root.create_or_switch_tab(id, instance_name, game_output, cx);
-                        });
+                        if let Some(instance_id) = self.game_output_instance_ids.get(&id) {
+                            let instance_root_path = InstanceEntries::find_root_path_by_id(&self.data.instances, *instance_id, cx)
+                                .unwrap_or_else(|| Arc::from(std::path::Path::new(".")));
+                            let dot_minecraft_path = InstanceEntries::find_dot_minecraft_by_id(&self.data.instances, *instance_id, cx)
+                                .unwrap_or_else(|| Arc::from(std::path::Path::new(".")));
+                            root_entity.update(cx, |root, cx| {
+                                root.create_or_switch_tab(id, *instance_id, instance_name, instance_root_path, dot_minecraft_path, game_output, keep_alive_handle.clone(), cx);
+                            });
+                        }
                     }
                 }
             },

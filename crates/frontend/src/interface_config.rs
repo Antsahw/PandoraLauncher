@@ -5,7 +5,7 @@ use rand::RngCore;
 use schema::{curseforge::CurseforgeClassId, modrinth::ModrinthProjectType};
 use serde::{Deserialize, Serialize};
 
-use crate::{pages::instance::instance_page::InstanceSubpageType, ts, ui::PageType};
+use crate::{pages::instance::{instance_page::InstanceSubpageType, server_page::ServerSubpageType}, ts, ui::PageType};
 
 struct InterfaceConfigHolder {
     config: InterfaceConfig,
@@ -52,7 +52,11 @@ pub struct InterfaceConfig {
     #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub instances_view_mode: InstancesViewMode,
     #[serde(default, deserialize_with = "schema::try_deserialize")]
+    pub servers_view_mode: ServersViewMode,
+    #[serde(default, deserialize_with = "schema::try_deserialize")]
     pub instance_subpage: InstanceSubpageType,
+    #[serde(default, deserialize_with = "schema::try_deserialize")]
+    pub server_subpage: ServerSubpageType,
 }
 
 fn default_modrinth_project_type() -> ModrinthProjectType {
@@ -83,7 +87,9 @@ impl Default for InterfaceConfig {
             hide_server_addresses: Default::default(),
             show_snapshots_in_create_instance: Default::default(),
             instances_view_mode: Default::default(),
-            instance_subpage: Default::default()
+            servers_view_mode: Default::default(),
+            instance_subpage: Default::default(),
+            server_subpage: Default::default(),
         }
     }
 }
@@ -126,6 +132,23 @@ impl InstancesViewMode {
         match self {
             InstancesViewMode::Cards => ts!("common.layout.cards").into(),
             InstancesViewMode::List => ts!("common.layout.list").into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, strum::EnumIter)]
+#[serde(rename_all = "lowercase")]
+pub enum ServersViewMode {
+    #[default]
+    Cards,
+    List,
+}
+
+impl ServersViewMode {
+    pub fn name(self) -> SharedString {
+        match self {
+            ServersViewMode::Cards => ts!("common.layout.cards").into(),
+            ServersViewMode::List => ts!("common.layout.list").into(),
         }
     }
 }

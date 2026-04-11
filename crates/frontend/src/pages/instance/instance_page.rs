@@ -10,7 +10,7 @@ use gpui_component::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    entity::{DataEntities, instance::InstanceEntry}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::{instance::{logs_subpage::InstanceLogsSubpage, mods_subpage::InstanceModsSubpage, quickplay_subpage::InstanceQuickplaySubpage, resource_packs_subpage::InstanceResourcePacksSubpage, settings_subpage::InstanceSettingsSubpage}, page::Page}, root, ts
+    entity::{DataEntities, instance::InstanceEntry}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::{instance::{logs_subpage::InstanceLogsSubpage, mods_subpage::InstanceModsSubpage, resource_packs_subpage::InstanceResourcePacksSubpage, settings_subpage::InstanceSettingsSubpage}, page::Page}, root, ts
 };
 
 pub struct InstancePage {
@@ -135,11 +135,10 @@ impl Render for InstancePage {
         }
 
         let selected_index = match &self.subpage {
-            InstanceSubpage::Quickplay(_) => 0,
-            InstanceSubpage::Logs(_) => 1,
-            InstanceSubpage::Mods(_) => 2,
-            InstanceSubpage::ResourcePacks(_) => 3,
-            InstanceSubpage::Settings(_) => 4,
+            InstanceSubpage::Logs(_) => 0,
+            InstanceSubpage::Mods(_) => 1,
+            InstanceSubpage::ResourcePacks(_) => 2,
+            InstanceSubpage::Settings(_) => 3,
         };
 
         v_flex()
@@ -149,18 +148,16 @@ impl Render for InstancePage {
                     .prefix(div().w_4())
                     .selected_index(selected_index)
                     .underline()
-                    .child(Tab::new().label(ts!("instance.quickplay")))
                     .child(Tab::new().label(ts!("instance.logs.title")))
                     .child(Tab::new().label(ts!("instance.content.mods")))
                     .child(Tab::new().label(ts!("instance.content.resourcepacks")))
                     .child(Tab::new().label(ts!("settings.title")))
                     .on_click(cx.listener(|_, index, _, cx| {
                         let page_type = match *index {
-                            0 => InstanceSubpageType::Quickplay,
-                            1 => InstanceSubpageType::Logs,
-                            2 => InstanceSubpageType::Mods,
-                            3 => InstanceSubpageType::ResourcePacks,
-                            4 => InstanceSubpageType::Settings,
+                            0 => InstanceSubpageType::Logs,
+                            1 => InstanceSubpageType::Mods,
+                            2 => InstanceSubpageType::ResourcePacks,
+                            3 => InstanceSubpageType::Settings,
                             _ => {
                                 return;
                             },
@@ -176,7 +173,6 @@ impl Render for InstancePage {
 #[serde(rename_all = "snake_case")]
 pub enum InstanceSubpageType {
     #[default]
-    Quickplay,
     Logs,
     Mods,
     ResourcePacks,
@@ -193,9 +189,6 @@ impl InstanceSubpageType {
         cx: &mut App
     ) -> InstanceSubpage {
         match self {
-            InstanceSubpageType::Quickplay => InstanceSubpage::Quickplay(cx.new(|cx| {
-                InstanceQuickplaySubpage::new(instance, backend_handle, window, cx)
-            })),
             InstanceSubpageType::Logs => InstanceSubpage::Logs(cx.new(|cx| {
                 InstanceLogsSubpage::new(instance, backend_handle, window, cx)
             })),
@@ -214,7 +207,6 @@ impl InstanceSubpageType {
 
 #[derive(Clone)]
 pub enum InstanceSubpage {
-    Quickplay(Entity<InstanceQuickplaySubpage>),
     Logs(Entity<InstanceLogsSubpage>),
     Mods(Entity<InstanceModsSubpage>),
     ResourcePacks(Entity<InstanceResourcePacksSubpage>),
@@ -224,7 +216,6 @@ pub enum InstanceSubpage {
 impl InstanceSubpage {
     pub fn page_type(&self) -> InstanceSubpageType {
         match self {
-            InstanceSubpage::Quickplay(_) => InstanceSubpageType::Quickplay,
             InstanceSubpage::Logs(_) => InstanceSubpageType::Logs,
             InstanceSubpage::Mods(_) => InstanceSubpageType::Mods,
             InstanceSubpage::ResourcePacks(_) => InstanceSubpageType::ResourcePacks,
@@ -234,7 +225,6 @@ impl InstanceSubpage {
 
     pub fn into_any_element(self) -> AnyElement {
         match self {
-            Self::Quickplay(entity) => entity.into_any_element(),
             Self::Logs(entity) => entity.into_any_element(),
             Self::Mods(entity) => entity.into_any_element(),
             Self::ResourcePacks(entity) => entity.into_any_element(),

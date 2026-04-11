@@ -1,4 +1,5 @@
 pub mod create_instance;
+pub mod create_server;
 pub mod curseforge_install;
 pub mod delete_instance;
 pub mod generic;

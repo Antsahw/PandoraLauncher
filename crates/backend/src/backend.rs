@@ -17,7 +17,7 @@ use indexmap::IndexSet;
 use parking_lot::RwLock;
 use reqwest::{StatusCode, redirect::Policy};
 use rustc_hash::FxHashMap;
-use schema::{auxiliary::AuxiliaryContentMeta, backend_config::{BackendConfig, ProxyConfig, SyncTargets}, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeGetFilesRequest}, instance::InstanceConfiguration, loader::Loader, minecraft_profile::MinecraftProfileResponse, modrinth::ModrinthSideRequirement};
+use schema::{auxiliary::AuxiliaryContentMeta, backend_config::{BackendConfig, ProxyConfig, SyncTargets}, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeGetFilesRequest}, forge::VersionFragment, instance::InstanceConfiguration, loader::Loader, maven::MavenMetadataXml, minecraft_profile::MinecraftProfileResponse, modrinth::ModrinthSideRequirement};
 use sha1::{Digest, Sha1};
 use strum::IntoEnumIterator;
 use tokio::sync::{OnceCell, Semaphore, mpsc::Receiver};
@@ -146,6 +146,7 @@ pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHa
         login_semaphore: Arc::new(Semaphore::new(1)),
         cached_minecraft_profiles: Default::default(),
         skin_manager: Default::default(),
+        server_processes: Arc::new(RwLock::new(HashMap::new())),
     };
 
     log::debug!("Doing initial backend load");
@@ -203,6 +204,7 @@ pub struct BackendState {
     pub login_semaphore: Arc<Semaphore>,
     pub cached_minecraft_profiles: Arc<RwLock<FxHashMap<Uuid, CachedMinecraftProfile>>>,
     pub skin_manager: Arc<RwLock<SkinManager>>,
+    pub server_processes: Arc<RwLock<HashMap<String, std::process::Child>>>,
 }
 
 pub struct CachedMinecraftProfile {
@@ -1074,6 +1076,102 @@ impl BackendState {
         Some(instance_dir.clone())
     }
 
+    pub async fn create_server(&self, name: &str, version: &str, server_software: &str, icon: Option<EmbeddedOrRaw>) -> Option<PathBuf> {
+        log::info!("Creating server {name} with software {server_software} version {version}");
+        if !crate::is_single_component_path_str(&name) {
+            self.send.send_warning(format!("Unable to create server, name must not be a path: {}", name));
+            return None;
+        }
+        if !sanitize_filename::is_sanitized_with_options(&*name, sanitize_filename::OptionsForCheck { windows: true, ..Default::default() }) {
+            self.send.send_warning(format!("Unable to create server, name is invalid: {}", name));
+            return None;
+        }
+        if self.instance_state.read().instances.iter().any(|i| i.name == name) {
+            self.send.send_warning("Unable to create server, name is already used".to_string());
+            return None;
+        }
+
+        self.file_watching.write().watch_filesystem(self.directories.servers_dir.clone(), WatchTarget::InstancesDir);
+
+        let server_dir = self.directories.servers_dir.join(name);
+        _ = std::fs::create_dir_all(&server_dir);
+
+        self.send.send_info(format!("Creating {} server v{}", server_software, version));
+        
+        // Create server metadata file (NOT instance config)
+        let server_metadata = serde_json::json!({
+            "name": name,
+            "server_software": server_software,
+            "minecraft_version": version,
+            "server_port": 25565,
+        });
+
+        let metadata_path = server_dir.join("server_metadata.json");
+        crate::write_safe(&metadata_path, serde_json::to_string_pretty(&server_metadata).unwrap().as_bytes()).unwrap();
+
+        // Create eula.txt (required for server to run)
+        let eula_path = server_dir.join("eula.txt");
+        let eula_content = "# By changing the setting below to TRUE you are indicating your agreement to our EULA (https://account.mojang.com/documents/minecraft_eula).\n# You also agree that tagging as eula=true is a legally binding contract.\neula=true\n";
+        crate::write_safe(&eula_path, eula_content.as_bytes()).unwrap();
+
+        // Create server.properties template
+        let properties_path = server_dir.join("server.properties");
+        let properties_content = format!(
+            "# Minecraft server properties\nserver-port=25565\nserver-ip=\nlevel-seed=\ngamemode=survival\ndifficulty=normal\npvp=true\n"
+        );
+        crate::write_safe(&properties_path, properties_content.as_bytes()).unwrap();
+
+        // Create plugins directory for Paper/Purpur
+        if matches!(server_software, "Paper" | "Purpur") {
+            let plugins_dir = server_dir.join("plugins");
+            _ = std::fs::create_dir_all(&plugins_dir);
+        }
+
+        // Create a README with download instructions
+        let readme_path = server_dir.join("README.md");
+        let readme_content = format!(
+            "# {} Server v{}\n\nTo start this server:\n\n1. Download the {} server JAR from the appropriate source\n2. Place it in this directory\n3. Run: `java -jar <server-jar>.jar nogui`\n\nSources:\n- Paper: https://papermc.io\n- Purpur: https://purpurmc.org\n- Fabric: https://fabricmc.net\n- Forge: https://minecraftforge.net\n- NeoForge: https://neoforged.net\n",
+            server_software, version, server_software
+        );
+        crate::write_safe(&readme_path, readme_content.as_bytes()).unwrap();
+
+        // Handle icon if provided
+        match icon {
+            Some(EmbeddedOrRaw::Embedded(e)) => {
+                // Store icon metadata
+                let icon_metadata = server_dir.join("icon_metadata.txt");
+                crate::write_safe(&icon_metadata, e.as_bytes()).unwrap();
+            },
+            Some(EmbeddedOrRaw::Raw(image_bytes)) => {
+                if let Ok(format) = image::guess_format(&*image_bytes) {
+                    if format == ImageFormat::Png {
+                        let icon_path = server_dir.join("server_icon.png");
+                        crate::write_safe(&icon_path, &*image_bytes).unwrap();
+                    } else {
+                        self.send.send_error("Unable to apply icon: only pngs are supported");
+                    }
+                } else {
+                    self.send.send_error("Unable to apply icon: unknown format");
+                }
+            },
+            None => {},
+        }
+
+        self.send.send_info(format!("Server '{}' created successfully at servers/{}", name, name));
+        
+        // Spawn background task to download server JAR
+        let sender = self.send.clone();
+        let server_dir_clone = server_dir.clone();
+        let version_str = version.to_string();
+        let software_str = server_software.to_string();
+        
+        tokio::spawn(async move {
+            let _ = download_server_jar_background(&sender, &server_dir_clone, &software_str, &version_str).await;
+        });
+        
+        Some(server_dir.clone())
+    }
+
     pub async fn rename_instance(self: &Arc<Self>, id: InstanceID, name: &str) {
         if !crate::is_single_component_path_str(&name) {
             self.send.send_warning(format!("Unable to rename instance, name must not be a path: {}", name));
@@ -1263,6 +1361,393 @@ impl BackendStateFileWatching {
 
         paths
     }
+}
+
+async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle, server_dir: &Path, software: &str, version: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let version = version.to_string();
+    let software = software.to_string();
+    
+    // Create server installers folder structure for storing downloaders
+    let launcher_parent = server_dir.parent().and_then(|p| p.parent()).ok_or("Invalid server path")?;
+    let installer_base = launcher_parent.join("server installers").join(&software).join(&version);
+    tokio::fs::create_dir_all(&installer_base).await.ok();
+    
+    match software.as_str() {
+        "Paper" => {
+            sender.send_info(format!("Downloading Paper {} from API...", version));
+            
+            let api_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}", version);
+            match client.get(&api_url).send().await {
+                Ok(response) => {
+                    match response.status().as_u16() {
+                        200 => {
+                            if let Ok(version_data) = response.json::<serde_json::Value>().await {
+                                if let Some(builds) = version_data["builds"].as_array() {
+                                    if !builds.is_empty() {
+                                        if let Some(latest_build) = builds.last().and_then(|b| b.as_i64()) {
+                                            let download_url = format!(
+                                                "https://api.papermc.io/v2/projects/paper/versions/{}/builds/{}/downloads/paper-{}-{}.jar",
+                                                version, latest_build, version, latest_build
+                                            );
+                                            
+                                            sender.send_info(format!("Downloading Paper JAR (build {})...", latest_build));
+                                            
+                                            match client.get(&download_url).send().await {
+                                                Ok(jar_response) if jar_response.status().is_success() => {
+                                                    if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                        let jar_path = server_dir.join(format!("paper-{}.jar", version));
+                                                        if let Ok(_) = tokio::fs::write(&jar_path, &jar_bytes).await {
+                                                            sender.send_info(format!("✓ Paper server downloaded successfully"));
+                                                        } else {
+                                                            sender.send_error("Failed to write JAR to disk".to_string());
+                                                        }
+                                                    }
+                                                },
+                                                _ => sender.send_error("Failed to download Paper JAR file".to_string()),
+                                            }
+                                        } else {
+                                            sender.send_warning(format!("No valid Paper builds found for version {}", version));
+                                        }
+                                    } else {
+                                        sender.send_warning(format!("No Paper builds found for version {}", version));
+                                    }
+                                } else {
+                                    sender.send_warning(format!("Invalid response from Paper API for version {}", version));
+                                }
+                            }
+                        },
+                        404 => {
+                            sender.send_warning(format!("Paper version {} not found. Valid versions use format like 1.20.1, 1.20, 1.19.2, etc.", version));
+                        },
+                        status => {
+                            sender.send_warning(format!("Paper API returned status {} for version {}", status, version));
+                        }
+                    }
+                },
+                Err(e) => {
+                    sender.send_warning(format!("Failed to connect to Paper API: {}. Server created but JAR download failed.", e));
+                }
+            }
+        },
+        "Purpur" => {
+            sender.send_info(format!("Downloading Purpur {} from API...", version));
+            
+            let api_url = format!("https://api.purpurmc.io/v2/purpur/{}", version);
+            match client.get(&api_url).send().await {
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(version_data) = response.json::<serde_json::Value>().await {
+                        if let Some(build) = version_data["builds"]["latest"].as_str() {
+                            let download_url = format!(
+                                "https://api.purpurmc.io/v2/purpur/{}/builds/{}/downloads/purpur-{}-{}.jar",
+                                version, build, version, build
+                            );
+                            
+                            sender.send_info(format!("Downloading Purpur JAR (build {})...", build));
+                            
+                            match client.get(&download_url).send().await {
+                                Ok(jar_response) if jar_response.status().is_success() => {
+                                    if let Ok(jar_bytes) = jar_response.bytes().await {
+                                        let jar_path = server_dir.join(format!("purpur-{}.jar", version));
+                                        if let Ok(_) = tokio::fs::write(&jar_path, &jar_bytes).await {
+                                            sender.send_info(format!("✓ Purpur server downloaded successfully"));
+                                        } else {
+                                            sender.send_error("Failed to write JAR to disk".to_string());
+                                        }
+                                    }
+                                },
+                                _ => sender.send_error("Failed to download Purpur JAR".to_string()),
+                            }
+                        } else {
+                            sender.send_warning(format!("Purpur version {} not found, falling back to Paper", version));
+                            // Fallback to Paper
+                            let api_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}", version);
+                            if let Ok(response) = client.get(&api_url).send().await {
+                                if response.status().is_success() {
+                                    if let Ok(version_data) = response.json::<serde_json::Value>().await {
+                                        if let Some(builds) = version_data["builds"].as_array() {
+                                            if !builds.is_empty() {
+                                                if let Some(latest_build) = builds.last().and_then(|b| b.as_i64()) {
+                                                    let download_url = format!(
+                                                        "https://api.papermc.io/v2/projects/paper/versions/{}/builds/{}/downloads/paper-{}-{}.jar",
+                                                        version, latest_build, version, latest_build
+                                                    );
+                                                    
+                                                    if let Ok(jar_response) = client.get(&download_url).send().await {
+                                                        if jar_response.status().is_success() {
+                                                            if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                                let jar_path = server_dir.join(format!("paper-{}.jar", version));
+                                                                let _ = tokio::fs::write(&jar_path, &jar_bytes).await;
+                                                                sender.send_info(format!("✓ Paper fallback downloaded successfully"));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                _ => {
+                    sender.send_warning(format!("Failed to fetch Purpur versions for {}, falling back to Paper", version));
+                    // Fallback to Paper
+                    let api_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}", version);
+                    if let Ok(response) = client.get(&api_url).send().await {
+                        if response.status().is_success() {
+                            if let Ok(version_data) = response.json::<serde_json::Value>().await {
+                                if let Some(builds) = version_data["builds"].as_array() {
+                                    if !builds.is_empty() {
+                                        if let Some(latest_build) = builds.last().and_then(|b| b.as_i64()) {
+                                            let download_url = format!(
+                                                "https://api.papermc.io/v2/projects/paper/versions/{}/builds/{}/downloads/paper-{}-{}.jar",
+                                                version, latest_build, version, latest_build
+                                            );
+                                            
+                                            if let Ok(jar_response) = client.get(&download_url).send().await {
+                                                if jar_response.status().is_success() {
+                                                    if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                        let jar_path = server_dir.join(format!("paper-{}.jar", version));
+                                                        let _ = tokio::fs::write(&jar_path, &jar_bytes).await;
+                                                        sender.send_info(format!("✓ Paper fallback downloaded successfully"));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "Fabric" => {
+            sender.send_info(format!("Downloading Fabric {} server...", version));
+            
+            match client.get("https://meta.fabricmc.net/v2/versions/loader")
+                .send().await {
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(loader_data) = response.json::<serde_json::Value>().await {
+                        if let Some(loaders_array) = loader_data.as_array() {
+                            let mut successful_download = false;
+                            
+                            // Try multiple recent loaders (first 5) for compatibility
+                            for (idx, loader) in loaders_array.iter().enumerate() {
+                                if idx >= 5 { break; } // Try top 5 recent loaders
+                                
+                                if let Some(loader_version) = loader["version"].as_str() {
+                                    if idx > 0 && !successful_download {
+                                        sender.send_info(format!("Trying with Fabric loader {}...", loader_version));
+                                    }
+                                    
+                                    let download_url = format!(
+                                        "https://meta.fabricmc.net/v2/versions/loader/{}/{}/server/jar",
+                                        version, loader_version
+                                    );
+                                    
+                                    match client.get(&download_url).send().await {
+                                        Ok(jar_response) if jar_response.status().is_success() => {
+                                            if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                sender.send_info(format!("Using Fabric loader {}, downloading server JAR...", loader_version));
+                                                let jar_path = server_dir.join(format!("fabric-server-{}.jar", version));
+                                                if let Ok(_) = tokio::fs::write(&jar_path, &jar_bytes).await {
+                                                    sender.send_info(format!("✓ Fabric server downloaded successfully"));
+                                                    successful_download = true;
+                                                    break;
+                                                } else {
+                                                    sender.send_error("Failed to write JAR to disk".to_string());
+                                                }
+                                            }
+                                        },
+                                        _ => {}, // Try next loader version
+                                    }
+                                }
+                            }
+                            
+                            if !successful_download {
+                                sender.send_error(format!("Could not download Fabric {} with any compatible loader. Visit https://fabricmc.net/use to verify version availability.", version));
+                            }
+                        }
+                    }
+                },
+                _ => sender.send_warning("Failed to fetch Fabric loader versions. Check your internet connection.".to_string()),
+            }
+        },
+        "Forge" => {
+            sender.send_info("Fetching Forge versions metadata...");
+            
+            match client.get("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml").send().await {
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(xml_bytes) = response.bytes().await {
+                        if let Ok(maven_xml) = serde_xml_rs::from_reader::<schema::maven::MavenMetadataXml, _>(xml_bytes.as_ref()) {
+                            let mut all_versions: Vec<String> = maven_xml.versioning.versions.version.iter()
+                                .map(|v| v.to_string())
+                                .collect();
+                            
+                            all_versions.sort_by_cached_key(|v| schema::forge::VersionFragment::string_to_parts(v));
+                            
+                            let minecraft_version_parts = schema::forge::VersionFragment::string_to_parts(&version);
+                            let mut matching_version: Option<String> = None;
+                            let mut matching_parts = Vec::new();
+                            
+                            for forge_version in all_versions.iter().rev() {
+                                let parts = schema::forge::VersionFragment::string_to_parts(forge_version);
+                                if parts.starts_with(&minecraft_version_parts) {
+                                    if parts > matching_parts {
+                                        matching_parts = parts;
+                                        matching_version = Some(forge_version.clone());
+                                    }
+                                }
+                            }
+                            
+                            if let Some(forge_version) = matching_version {
+                                sender.send_info(format!("Downloading Forge {} installer...", forge_version));
+                                
+                                let download_url = format!(
+                                    "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}-installer.jar",
+                                    forge_version, forge_version
+                                );
+                                
+                                match client.get(&download_url).send().await {
+                                    Ok(jar_response) if jar_response.status().is_success() => {
+                                        if let Ok(jar_bytes) = jar_response.bytes().await {
+                                            let installer_path = server_dir.join(format!("forge-{}-installer.jar", forge_version));
+                                            if let Ok(_) = tokio::fs::write(&installer_path, &jar_bytes).await {
+                                                sender.send_info(format!("✓ Forge installer downloaded. Now running installer to generate server JAR..."));
+                                                
+                                                // Try to run the installer automatically
+                                                match std::process::Command::new("java")
+                                                    .args(["Xmx1G", "-jar"])
+                                                    .arg(&installer_path)
+                                                    .arg("--installServer")
+                                                    .current_dir(&server_dir)
+                                                    .output()
+                                                {
+                                                    Ok(output) => {
+                                                        if output.status.success() {
+                                                            sender.send_info(format!("✓ Forge server JAR created successfully. Server is ready to launch!"));
+                                                        } else {
+                                                            let _error_msg = String::from_utf8_lossy(&output.stderr);
+                                                            sender.send_warning(format!("Forge installer completed but may need attention. Check console for details. If forge-{}-universal.jar exists, server is ready.", forge_version));
+                                                        }
+                                                    },
+                                                    Err(e) => {
+                                                        sender.send_warning(format!("Could not auto-run Forge installer: {}. Please manually run: java -Xmx1G -jar forge-{}-installer.jar --installServer", e, forge_version));
+                                                    }
+                                                }
+                                            } else {
+                                                sender.send_error("Failed to write installer to disk".to_string());
+                                            }
+                                        }
+                                    },
+                                    _ => sender.send_error(format!("Failed to download Forge {} installer", forge_version)),
+                                }
+                            } else {
+                                sender.send_error(format!("No compatible Forge version found for Minecraft {}. Check https://files.minecraftforge.net/", version));
+                            }
+                        }
+                    }
+                },
+                _ => sender.send_error("Failed to fetch Forge versions. Check your internet connection.".to_string()),
+            }
+        },
+        "NeoForge" => {
+            sender.send_info("Fetching NeoForge versions metadata...");
+            
+            match client.get("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml").send().await {
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(xml_bytes) = response.bytes().await {
+                        if let Ok(maven_xml) = serde_xml_rs::from_reader::<schema::maven::MavenMetadataXml, _>(xml_bytes.as_ref()) {
+                            let mut all_versions: Vec<String> = maven_xml.versioning.versions.version.iter()
+                                .map(|v| v.to_string())
+                                .collect();
+                            
+                            all_versions.sort_by_cached_key(|v| schema::forge::VersionFragment::string_to_parts(v));
+                            
+                            let mut minecraft_version_parts = schema::forge::VersionFragment::string_to_parts(&version);
+                            
+                            // NeoForge versioning transforms:
+                            // 1.21.5 -> 21.5
+                            // 1.21 -> 21.0
+                            // 26.1 -> 26.1.0
+                            if minecraft_version_parts.len() < 3 {
+                                minecraft_version_parts.push(schema::forge::VersionFragment::Number(0))
+                            }
+                            if minecraft_version_parts[0] == schema::forge::VersionFragment::Number(1) {
+                                minecraft_version_parts.remove(0);
+                            }
+                            
+                            let mut matching_version: Option<String> = None;
+                            let mut matching_parts = Vec::new();
+                            
+                            for neoforge_version in all_versions.iter().rev() {
+                                let parts = schema::forge::VersionFragment::string_to_parts(neoforge_version);
+                                if parts.starts_with(&minecraft_version_parts) {
+                                    if parts > matching_parts {
+                                        matching_parts = parts;
+                                        matching_version = Some(neoforge_version.clone());
+                                    }
+                                }
+                            }
+                            
+                            if let Some(neoforge_version) = matching_version {
+                                sender.send_info(format!("Downloading NeoForge {} installer...", neoforge_version));
+                                
+                                let download_url = format!(
+                                    "https://maven.neoforged.net/releases/net/neoforged/neoforge/{}/neoforge-{}-installer.jar",
+                                    neoforge_version, neoforge_version
+                                );
+                                
+                                match client.get(&download_url).send().await {
+                                    Ok(jar_response) if jar_response.status().is_success() => {
+                                        if let Ok(jar_bytes) = jar_response.bytes().await {
+                                            let installer_path = server_dir.join(format!("neoforge-{}-installer.jar", neoforge_version));
+                                            if let Ok(_) = tokio::fs::write(&installer_path, &jar_bytes).await {
+                                                sender.send_info(format!("✓ NeoForge installer downloaded. Now running installer to generate server JAR..."));
+                                                
+                                                // Try to run the installer automatically
+                                                match std::process::Command::new("java")
+                                                    .args(["Xmx1G", "-jar"])
+                                                    .arg(&installer_path)
+                                                    .arg("--installServer")
+                                                    .current_dir(&server_dir)
+                                                    .output()
+                                                {
+                                                    Ok(output) => {
+                                                        if output.status.success() {
+                                                            sender.send_info(format!("✓ NeoForge server JAR created successfully. Server is ready to launch!"));
+                                                        } else {
+                                                            let _error_msg = String::from_utf8_lossy(&output.stderr);
+                                                            sender.send_warning(format!("NeoForge installer completed but may need attention. Check console for details. If neoforge-{}-server.jar exists, server is ready.", neoforge_version));
+                                                        }
+                                                    },
+                                                    Err(e) => {
+                                                        sender.send_warning(format!("Could not auto-run NeoForge installer: {}. Please manually run: java -Xmx1G -jar neoforge-{}-installer.jar --installServer", e, neoforge_version));
+                                                    }
+                                                }
+                                            } else {
+                                                sender.send_error("Failed to write installer to disk".to_string());
+                                            }
+                                        }
+                                    },
+                                    _ => sender.send_error(format!("Failed to download NeoForge {} installer", neoforge_version)),
+                                }
+                            } else {
+                                sender.send_error(format!("No compatible NeoForge version found for Minecraft {}. Check https://neoforged.net/", version));
+                            }
+                        }
+                    }
+                },
+                _ => sender.send_error("Failed to fetch NeoForge versions. Check your internet connection.".to_string()),
+            }
+        },
+        _ => sender.send_error(format!("Unknown server software: {}", software)),
+    }
+    
+    Ok(())
 }
 
 #[derive(thiserror::Error, Debug)]

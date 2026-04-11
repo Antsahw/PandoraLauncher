@@ -84,6 +84,94 @@ impl BackendState {
             MessageToBackend::CreateInstance { name, version, loader, icon } => {
                 self.create_instance(&name, &version, loader, icon).await;
             },
+            MessageToBackend::CreateServer { name, version, server_software, icon } => {
+                let clone = self.clone();
+                tokio::spawn(async move {
+                    let _ = clone.create_server(&name, &version, &server_software, icon).await;
+                });
+            },
+            MessageToBackend::StartServer { name, modal_action } => {
+                let clone = self.clone();
+                let name_clone = name.to_string();
+                let modal_action_clone = modal_action.clone();
+                tokio::spawn(async move {
+                    clone.start_server(&name_clone, &modal_action_clone).await;
+                });
+            },
+            MessageToBackend::StopServer { name } => {
+                log::info!("Stopping server: {}", name);
+                self.send.send_info(format!("Stopping server '{}'...", name));
+                let clone = self.clone();
+                tokio::spawn(async move {
+                    clone.stop_server(&name).await;
+                });
+            },
+            MessageToBackend::SendServerCommand { name, command } => {
+                log::info!("Sending command to server {}: {}", name, command);
+                // TODO: Implement actual command sending (write to stdin)
+            },
+            MessageToBackend::DeleteServer { name } => {
+                log::info!("Deleting server: {}", name);
+                self.send.send_info(format!("Deleting server '{}'...", name));
+                
+                let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+                    std::path::PathBuf::from(dir)
+                } else {
+                    let base_dirs = directories::BaseDirs::new().unwrap();
+                    let data_dir = base_dirs.data_dir();
+                    data_dir.join("PandoraLauncher")
+                };
+                let servers_dir = pandora_dir.join("servers");
+                let server_path = servers_dir.join(name.as_str());
+                
+                if server_path.exists() {
+                    match std::fs::remove_dir_all(&server_path) {
+                        Ok(_) => {
+                            self.send.send_success(format!("Server '{}' deleted successfully", name));
+                            self.send.send(bridge::message::MessageToFrontend::Refresh);
+                        },
+                        Err(e) => {
+                            self.send.send_error(format!("Failed to delete server: {}", e));
+                        }
+                    }
+                } else {
+                    self.send.send_warning(format!("Server '{}' not found", name));
+                }
+            },
+            MessageToBackend::RenameServer { old_name, new_name } => {
+                log::info!("Renaming server '{}' to '{}'", old_name, new_name);
+                
+                let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+                    std::path::PathBuf::from(dir)
+                } else {
+                    let base_dirs = directories::BaseDirs::new().unwrap();
+                    let data_dir = base_dirs.data_dir();
+                    data_dir.join("PandoraLauncher")
+                };
+                let servers_dir = pandora_dir.join("servers");
+                let old_path = servers_dir.join(old_name.as_str());
+                let new_path = servers_dir.join(new_name.as_str());
+                
+                if !old_path.exists() {
+                    self.send.send_warning(format!("Server '{}' not found", old_name));
+                    return;
+                }
+                
+                if new_path.exists() {
+                    self.send.send_warning(format!("Server '{}' already exists", new_name));
+                    return;
+                }
+                
+                match std::fs::rename(&old_path, &new_path) {
+                    Ok(_) => {
+                        self.send.send_success(format!("Server renamed from '{}' to '{}'", old_name, new_name));
+                        self.send.send(bridge::message::MessageToFrontend::Refresh);
+                    },
+                    Err(e) => {
+                        self.send.send_error(format!("Failed to rename server: {}", e));
+                    }
+                }
+            },
             MessageToBackend::DeleteInstance { id } => {
                 if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
                     let result = std::fs::remove_dir_all(&instance.root_path);
@@ -2022,6 +2110,90 @@ impl BackendState {
         }
 
         println!("Done downloading all metadata");
+    }
+
+    pub async fn start_server(&self, name: &str, modal_action: &ModalAction) {
+        self.send.send_info(format!("Starting server '{}'...", name));
+        
+        let server_dir = self.directories.servers_dir.join(name);
+        
+        // Check if server directory exists
+        if !server_dir.exists() {
+            self.send.send_error(format!("Server directory not found: {:?}", server_dir));
+            modal_action.set_error_message(format!("Server directory not found: {:?}", server_dir).into());
+            modal_action.set_finished();
+            return;
+        }
+
+        // Find the server JAR file
+        let mut jar_path = None;
+        if let Ok(entries) = std::fs::read_dir(&server_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "jar") {
+                    jar_path = Some(path);
+                    break;
+                }
+            }
+        }
+
+        let Some(jar_path) = jar_path else {
+            self.send.send_error("No JAR file found in server directory".to_string());
+            modal_action.set_error_message("No JAR file found in server directory".into());
+            modal_action.set_finished();
+            return;
+        };
+
+        // Prepare process
+        let mut cmd = std::process::Command::new("java");
+        cmd
+            .arg("-Xmx1024M")
+            .arg("-Xms512M")
+            .arg("-jar")
+            .arg(&jar_path)
+            .arg("nogui")
+            .current_dir(&server_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::piped());
+
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let pid = child.id();
+                self.send.send_info(format!("Server started (PID: {})", pid));
+                
+                // Start game output like instances do
+                if let Some(stdout) = child.stdout.take() {
+                    log_reader::start_game_output(stdout, child.stderr.take(), self.send.clone(), name);
+                }
+
+                // Store the child process for later stopping
+                self.server_processes.write().insert(name.to_string(), child);
+
+                modal_action.set_finished();
+            }
+            Err(e) => {
+                self.send.send_error(format!("Failed to start server: {}", e));
+                modal_action.set_error_message(format!("Failed to start server: {}", e).into());
+                modal_action.set_finished();
+            }
+        }
+    }
+
+    pub async fn stop_server(&self, name: &str) {
+        if let Some(mut child) = self.server_processes.write().remove(name) {
+            match child.kill() {
+                Ok(_) => {
+                    self.send.send_info(format!("Server '{}' stopped", name));
+                    let _ = child.wait();
+                }
+                Err(e) => {
+                    self.send.send_error(format!("Failed to kill server: {}", e));
+                }
+            }
+        } else {
+            self.send.send_warning(format!("Server '{}' is not running", name));
+        }
     }
 }
 
