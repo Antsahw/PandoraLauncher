@@ -5,7 +5,7 @@ use std::{
 use schema::{
     backend_config::{BackendConfig, ProxyConfig}, instance::{
         InstanceConfiguration, InstanceJavaRuntimeConfiguration, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration,
-        InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSandboxConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration,
+        InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration,
     }, loader::Loader, minecraft_profile::{MinecraftProfileCape, SkinVariant}, pandora_update::UpdatePrompt
 };
 use ustr::Ustr;
@@ -124,10 +124,6 @@ pub enum MessageToBackend {
     SetInstanceLinuxWrapper {
         id: InstanceID,
         linux_wrapper: InstanceLinuxWrapperConfiguration,
-    },
-    SetInstanceSandboxConfiguration {
-        id: InstanceID,
-        sandbox: InstanceSandboxConfiguration,
     },
     SetInstanceSystemLibraries {
         id: InstanceID,

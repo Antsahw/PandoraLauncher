@@ -27,8 +27,6 @@ pub struct InstanceConfiguration {
     pub java_runtime: Option<InstanceJavaRuntimeConfiguration>,
     #[serde(default, deserialize_with = "crate::try_deserialize", skip_serializing_if = "is_default_linux_wrapper_configuration")]
     pub linux_wrapper: Option<InstanceLinuxWrapperConfiguration>,
-    #[serde(default, deserialize_with = "crate::try_deserialize", skip_serializing_if = "is_default_sandbox_configuration")]
-    pub sandbox: Option<InstanceSandboxConfiguration>,
     #[serde(default, deserialize_with = "crate::try_deserialize", skip_serializing_if = "is_default_system_libraries_configuration")]
     pub system_libraries: Option<InstanceSystemLibrariesConfiguration>,
     #[serde(default, deserialize_with = "crate::try_deserialize", skip_serializing_if = "crate::skip_if_none")]
@@ -50,7 +48,6 @@ impl InstanceConfiguration {
             jvm_binary: None,
             java_runtime: None,
             linux_wrapper: None,
-            sandbox: None,
             system_libraries: None,
             instance_fallback_icon: None,
             disable_file_syncing: false,
@@ -185,30 +182,6 @@ fn is_default_linux_wrapper_configuration(config: &Option<InstanceLinuxWrapperCo
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct InstanceSandboxConfiguration {
-    #[serde(default, deserialize_with = "crate::try_deserialize")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub allowed_paths: Vec<Ustr>,
-}
-
-impl Default for InstanceSandboxConfiguration {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            allowed_paths: Vec::new(),
-        }
-    }
-}
-
-fn is_default_sandbox_configuration(config: &Option<InstanceSandboxConfiguration>) -> bool {
-    if let Some(config) = config {
-        !config.enabled && config.allowed_paths.is_empty()
-    } else {
-        true
-    }
-}
 
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]

@@ -465,22 +465,6 @@ instance:
       en: Use Discrete GPU
     disable_gl_threaded_optimizations:
       en: Disable GL Threaded Optimizations
-    use_sandbox:
-      en: Enable Sandbox
-    sandbox_paths:
-      en: Sandbox Allowed Paths (one per line)
-
-  # Sandbox Configuration
-  sandbox:
-    title:
-      en: Sandbox Configuration
-    allowed_paths:
-      en: Allowed Paths
-    add_path:
-      en: Add Path
-    path_placeholder:
-      en: Enter path
-
   # Delete Dialog
   delete_dialog:
     title:

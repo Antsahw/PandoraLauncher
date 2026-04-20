@@ -205,7 +205,6 @@ impl BackendState {
                 
                 match std::fs::read_to_string(&file_path) {
                     Ok(content) => {
-                        self.send.send_info(format!("Server file '{}' read successfully", filename));
                         self.send.send(MessageToFrontend::ServerFileContent {
                             filename,
                             content: content.into(),
@@ -378,13 +377,6 @@ impl BackendState {
                 if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
                     instance.configuration.modify(|configuration| {
                         configuration.linux_wrapper = Some(linux_wrapper);
-                    });
-                }
-            },
-            MessageToBackend::SetInstanceSandboxConfiguration { id, sandbox } => {
-                if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
-                    instance.configuration.modify(|configuration| {
-                        configuration.sandbox = Some(sandbox);
                     });
                 }
             },
