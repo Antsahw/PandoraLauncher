@@ -381,6 +381,13 @@ impl BackendState {
                     });
                 }
             },
+            MessageToBackend::SetInstanceSandboxConfiguration { id, sandbox } => {
+                if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
+                    instance.configuration.modify(|configuration| {
+                        configuration.sandbox = Some(sandbox);
+                    });
+                }
+            },
             MessageToBackend::SetInstanceSystemLibraries { id, system_libraries } => {
                 if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
                     instance.configuration.modify(|configuration| {

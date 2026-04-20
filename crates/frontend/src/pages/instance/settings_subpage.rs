@@ -7,8 +7,9 @@ use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme as _, Disableable, IndexPath, Sizable, WindowExt, button::{Button, ButtonVariants}, checkbox::Checkbox, h_flex, input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent}, notification::{Notification, NotificationType}, select::{SearchableVec, Select, SelectEvent, SelectState}, skeleton::Skeleton, v_flex
 };
-use schema::{fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, instance::{AUTO_LIBRARY_PATH_GLFW, AUTO_LIBRARY_PATH_OPENAL, InstanceJavaRuntimeConfiguration, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration, InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration, LwjglLibraryPath}, loader::Loader, version_manifest::MinecraftVersionManifest};
+use schema::{fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, instance::{AUTO_LIBRARY_PATH_GLFW, AUTO_LIBRARY_PATH_OPENAL, InstanceJavaRuntimeConfiguration, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration, InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSandboxConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration, LwjglLibraryPath}, loader::Loader, version_manifest::MinecraftVersionManifest};
 use strum::IntoEnumIterator;
+use ustr::Ustr;
 use uuid::Uuid;
 
 use crate::{
@@ -69,6 +70,14 @@ pub struct InstanceSettingsSubpage {
     mangohud_available: bool,
     #[cfg(target_os = "linux")]
     gamemode_available: bool,
+
+    #[cfg(target_os = "linux")]
+    sandbox_enabled: bool,
+    #[cfg(target_os = "linux")]
+    sandbox_paths_input_state: Entity<InputState>,
+    #[cfg(target_os = "linux")]
+    sandbox_paths: Vec<Ustr>,
+
     new_name_change_state: NewNameChangeState,
     backend_handle: BackendHandle,
     _observe_loader_version_subscription: Option<Subscription>,
@@ -98,6 +107,8 @@ impl InstanceSettingsSubpage {
         let java_runtime = entry.configuration.java_runtime.clone().unwrap_or_default();
         #[cfg(target_os = "linux")]
         let linux_wrapper = entry.configuration.linux_wrapper.clone().unwrap_or_default();
+        #[cfg(target_os = "linux")]
+        let sandbox = entry.configuration.sandbox.clone().unwrap_or_default();
         let system_libraries = entry.configuration.system_libraries.clone().unwrap_or_default();
 
         let instance_root_label = PathLabel::new(entry.root_path.clone(), true);
@@ -197,6 +208,14 @@ impl InstanceSettingsSubpage {
         });
         cx.subscribe(&java_runtime_select, Self::on_java_runtime_selected).detach();
 
+        #[cfg(target_os = "linux")]
+        let sandbox_paths_input_state = cx.new(|cx| {
+            let paths_str = sandbox.allowed_paths.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n");
+            InputState::new(window, cx).auto_grow(1, 8).default_value(paths_str)
+        });
+        #[cfg(target_os = "linux")]
+        cx.subscribe(&sandbox_paths_input_state, Self::on_sandbox_paths_changed).detach();
+
         let mut page = Self {
             data: data.clone(),
             instance: instance.clone(),
@@ -237,6 +256,12 @@ impl InstanceSettingsSubpage {
             mangohud_available: Self::is_command_available("mangohud"),
             #[cfg(target_os = "linux")]
             gamemode_available: Self::is_command_available("gamemoderun"),
+            #[cfg(target_os = "linux")]
+            sandbox_enabled: sandbox.enabled,
+            #[cfg(target_os = "linux")]
+            sandbox_paths_input_state,
+            #[cfg(target_os = "linux")]
+            sandbox_paths: sandbox.allowed_paths,
             new_name_change_state: NewNameChangeState::NoChange,
             backend_handle,
             loader_versions_state: TypelessFrontendMetadataResult::Loading,
@@ -658,7 +683,43 @@ impl InstanceSettingsSubpage {
             use_mangohud: self.use_mangohud,
             use_gamemode: self.use_gamemode,
             use_discrete_gpu: self.use_discrete_gpu,
-            disable_gl_threaded_optimizations: self.disable_gl_threaded_optimizations
+            disable_gl_threaded_optimizations: self.disable_gl_threaded_optimizations,
+            use_sandbox: self.sandbox_enabled
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get_sandbox_configuration(&self) -> InstanceSandboxConfiguration {
+        InstanceSandboxConfiguration {
+            enabled: self.sandbox_enabled,
+            allowed_paths: self.sandbox_paths.clone()
+        }
+    }
+
+    pub fn on_sandbox_paths_changed(
+        &mut self,
+        _: Entity<InputState>,
+        event: &InputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let InputEvent::Change = event {
+            let input_value = self.sandbox_paths_input_state.read(cx).value();
+            self.sandbox_paths = input_value
+                .split('\n')
+                .filter_map(|path| {
+                    let trimmed = path.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(Ustr::from(trimmed))
+                    }
+                })
+                .collect();
+            
+            self.backend_handle.send(MessageToBackend::SetInstanceSandboxConfiguration {
+                id: self.instance_id,
+                sandbox: self.get_sandbox_configuration(),
+            });
         }
     }
 
@@ -990,6 +1051,23 @@ impl Render for InstanceSettingsSubpage {
                     cx.notify();
                 }
             })))
+            .child(Checkbox::new("use_sandbox").label(ts!("instance.linux.use_sandbox")).checked(self.sandbox_enabled).on_click(cx.listener(|page, value, _, cx| {
+                if page.sandbox_enabled != *value {
+                    page.sandbox_enabled = *value;
+                    page.backend_handle.send(MessageToBackend::SetInstanceLinuxWrapper {
+                        id: page.instance_id,
+                        linux_wrapper: page.get_linux_wrapper_configuration()
+                    });
+                    page.backend_handle.send(MessageToBackend::SetInstanceSandboxConfiguration {
+                        id: page.instance_id,
+                        sandbox: page.get_sandbox_configuration(),
+                    });
+                    cx.notify();
+                }
+            })))
+            .child(div().child(ts!("instance.linux.sandbox_paths")).when(self.sandbox_enabled, |this| {
+                this.child(Input::new(&self.sandbox_paths_input_state))
+            }))
         );
 
         let actions_content = v_flex()

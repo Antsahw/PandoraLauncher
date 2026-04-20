@@ -2128,21 +2128,21 @@ pub struct LaunchContext {
 
 impl LaunchContext {
     pub fn launch(mut self, version_info: &MinecraftVersion) -> std::io::Result<std::process::Child> {
-        #[cfg(target_os = "linux")]
-        let use_mangohud = self.configuration.linux_wrapper.as_ref().map(|w| w.use_mangohud).unwrap_or(false);
-        #[cfg(target_os = "linux")]
-        let use_gamemode = self.configuration.linux_wrapper.as_ref().map(|w| w.use_gamemode).unwrap_or(false);
+        let mut wrapping_command: Vec<String> = Vec::new();
 
-        let mut wrapping_command = Vec::new();
         #[cfg(target_os = "linux")]
         {
-
-
-            if use_mangohud {
-                wrapping_command.push("mangohud".to_string());
-            }
-            if use_gamemode {
-                wrapping_command.push("gamemoderun".to_string());
+            if let Some(linux_wrapper) = &self.configuration.linux_wrapper {
+                if linux_wrapper.use_mangohud {
+                    if let Some(mangohud_path) = command::get_command_path("mangohud".as_ref()) {
+                        wrapping_command.push(mangohud_path.to_string_lossy().to_string());
+                    }
+                }
+                if linux_wrapper.use_gamemode {
+                    if let Some(gamemoderun_path) = command::get_command_path("gamemoderun".as_ref()) {
+                        wrapping_command.push(gamemoderun_path.to_string_lossy().to_string());
+                    }
+                }
             }
         }
 
