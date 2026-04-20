@@ -164,8 +164,6 @@ pub struct InstanceLinuxWrapperConfiguration {
     pub use_discrete_gpu: bool,
     #[serde(default, deserialize_with = "crate::try_deserialize")]
     pub disable_gl_threaded_optimizations: bool,
-    #[serde(default, deserialize_with = "crate::try_deserialize")]
-    pub use_sandbox: bool,
 }
 
 impl Default for InstanceLinuxWrapperConfiguration {
@@ -175,14 +173,13 @@ impl Default for InstanceLinuxWrapperConfiguration {
             use_gamemode: false,
             use_discrete_gpu: true,
             disable_gl_threaded_optimizations: false,
-            use_sandbox: false
         }
     }
 }
 
 fn is_default_linux_wrapper_configuration(config: &Option<InstanceLinuxWrapperConfiguration>) -> bool {
     if let Some(config) = config {
-        !config.use_mangohud && !config.use_gamemode && config.use_discrete_gpu && !config.disable_gl_threaded_optimizations && !config.use_sandbox
+        !config.use_mangohud && !config.use_gamemode && config.use_discrete_gpu && !config.disable_gl_threaded_optimizations
     } else {
         true
     }

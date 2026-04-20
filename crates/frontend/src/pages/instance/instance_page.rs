@@ -10,7 +10,7 @@ use gpui_component::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    entity::{DataEntities, instance::InstanceEntry}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::{instance::{logs_subpage::InstanceLogsSubpage, mods_subpage::InstanceModsSubpage, resource_packs_subpage::InstanceResourcePacksSubpage, settings_subpage::InstanceSettingsSubpage}, page::Page}, root, ts
+    entity::{DataEntities, instance::InstanceEntry}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::{instance::{logs_subpage::InstanceLogsSubpage, mods_subpage::InstanceModsSubpage, resource_packs_subpage::InstanceResourcePacksSubpage, settings_subpage::InstanceSettingsSubpage, sandbox_subpage::InstanceSandboxSubpage}, page::Page}, root, ts
 };
 
 pub struct InstancePage {
@@ -146,6 +146,7 @@ impl Render for InstancePage {
             InstanceSubpage::Mods(_) => 1,
             InstanceSubpage::ResourcePacks(_) => 2,
             InstanceSubpage::Settings(_) => 3,
+            InstanceSubpage::Sandbox(_) => 4,
         };
 
         v_flex()
@@ -184,6 +185,7 @@ pub enum InstanceSubpageType {
     Mods,
     ResourcePacks,
     Settings,
+    Sandbox,
 }
 
 impl InstanceSubpageType {
@@ -208,6 +210,9 @@ impl InstanceSubpageType {
             InstanceSubpageType::Settings => InstanceSubpage::Settings(cx.new(|cx| {
                 InstanceSettingsSubpage::new(instance, data, backend_handle, window, cx)
             })),
+            InstanceSubpageType::Sandbox => InstanceSubpage::Sandbox(cx.new(|cx| {
+                InstanceSandboxSubpage::new(instance, backend_handle, window, cx)
+            })),
         }
     }
 }
@@ -218,6 +223,7 @@ pub enum InstanceSubpage {
     Mods(Entity<InstanceModsSubpage>),
     ResourcePacks(Entity<InstanceResourcePacksSubpage>),
     Settings(Entity<InstanceSettingsSubpage>),
+    Sandbox(Entity<InstanceSandboxSubpage>),
 }
 
 impl InstanceSubpage {
@@ -227,6 +233,7 @@ impl InstanceSubpage {
             InstanceSubpage::Mods(_) => InstanceSubpageType::Mods,
             InstanceSubpage::ResourcePacks(_) => InstanceSubpageType::ResourcePacks,
             InstanceSubpage::Settings(_) => InstanceSubpageType::Settings,
+            InstanceSubpage::Sandbox(_) => InstanceSubpageType::Sandbox,
         }
     }
 
@@ -236,6 +243,7 @@ impl InstanceSubpage {
             Self::Mods(entity) => entity.into_any_element(),
             Self::ResourcePacks(entity) => entity.into_any_element(),
             Self::Settings(entity) => entity.into_any_element(),
+            Self::Sandbox(entity) => entity.into_any_element(),
         }
     }
 }

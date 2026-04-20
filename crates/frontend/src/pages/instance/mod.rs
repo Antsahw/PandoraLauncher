@@ -3,6 +3,7 @@ pub mod logs_subpage;
 pub mod mods_subpage;
 pub mod quickplay_subpage;
 pub mod resource_packs_subpage;
+pub mod sandbox_subpage;
 pub mod server_page;
 pub mod server_settings_subpage;
 pub mod settings_subpage;
