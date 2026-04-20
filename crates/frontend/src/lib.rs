@@ -190,7 +190,8 @@ pub fn start(
             panic_messages: Arc::new(PanicMessages {
                 panic_message,
                 deadlock_message,
-            })
+            }),
+            server_files: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         };
 
         let mut processor = Processor::new(data.clone(), main_window_hidden);

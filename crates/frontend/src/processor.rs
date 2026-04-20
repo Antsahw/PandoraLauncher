@@ -173,6 +173,10 @@ impl Processor {
                     window.push_notification(notification, cx);
                 });
             },
+            MessageToFrontend::ServerFileContent { filename, content } => {
+                // Store file content in shared cache for ServerPropertiesSubpage to access
+                self.data.server_files.write().insert(filename.to_string(), content.to_string());
+            },
             MessageToFrontend::Refresh => {
                 let Some(handle) = self.main_window_handle else {
                     return;
@@ -198,6 +202,10 @@ impl Processor {
                 // Find the instance ID by name
                 if let Some(instance_id) = InstanceEntries::find_id_by_name(&self.data.instances, &instance_name, cx) {
                     self.game_output_instance_ids.insert(id, instance_id);
+                } else {
+                    // If not found in instances, it's likely a server
+                    // Use dangling() as marker for servers
+                    self.game_output_instance_ids.insert(id, bridge::instance::InstanceID::dangling());
                 }
                 
                 // Check if the window still exists - if not, clear the reference
@@ -322,9 +330,10 @@ impl Processor {
                         });
                     }
                     
-                    // Refresh the window if it exists
+                    // Refresh and activate the window if it exists
                     if let Some(window_handle) = &self.game_output_window {
                         _ = window_handle.update(cx, |_, window, _cx| {
+                            window.activate_window();
                             window.refresh();
                         });
                     }
@@ -356,6 +365,28 @@ impl Processor {
                         }
                     }
                 });
+            }
+            MessageToFrontend::ServerAdded { .. } | MessageToFrontend::ServerUpdated { .. } => {
+                // Server was added or updated - reload server list (page will auto-reload on next render)
+                if let Some(handle) = self.main_window_handle {
+                    _ = handle.update(cx, |root, _window, window_cx| {
+                        use crate::root::LauncherRoot;
+                        use crate::ui::LauncherPage;
+                        
+                        if let Ok(root) = root.downcast::<LauncherRoot>() {
+                            root.update(window_cx, |root, cx| {
+                                root.ui.update(cx, |launcher_ui, cx| {
+                                    // If currently on Servers page, trigger notification to refresh
+                                    if let LauncherPage::Servers(servers_page) = &launcher_ui.page {
+                                        servers_page.update(cx, |_page, cx| {
+                                            cx.notify();
+                                        });
+                                    }
+                                });
+                            });
+                        }
+                    });
+                }
             }
         }
     }

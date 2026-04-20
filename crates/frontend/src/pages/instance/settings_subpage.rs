@@ -7,7 +7,7 @@ use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme as _, Disableable, IndexPath, Sizable, WindowExt, button::{Button, ButtonVariants}, checkbox::Checkbox, h_flex, input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent}, notification::{Notification, NotificationType}, select::{SearchableVec, Select, SelectEvent, SelectState}, skeleton::Skeleton, v_flex
 };
-use schema::{fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, instance::{AUTO_LIBRARY_PATH_GLFW, AUTO_LIBRARY_PATH_OPENAL, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration, InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration, LwjglLibraryPath}, loader::Loader, version_manifest::MinecraftVersionManifest};
+use schema::{fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, instance::{AUTO_LIBRARY_PATH_GLFW, AUTO_LIBRARY_PATH_OPENAL, InstanceJavaRuntimeConfiguration, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration, InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration, LwjglLibraryPath}, loader::Loader, version_manifest::MinecraftVersionManifest};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 
@@ -47,6 +47,8 @@ pub struct InstanceSettingsSubpage {
     jvm_flags_input_state: Entity<InputState>,
     jvm_binary_enabled: bool,
     jvm_binary_path: Option<PathLabel>,
+    java_runtime_enabled: bool,
+    java_runtime_select: Entity<SelectState<SearchableVec<&'static str>>>,
 
     instance_root_label: PathLabel,
 
@@ -93,8 +95,9 @@ impl InstanceSettingsSubpage {
         let wrapper_command = entry.configuration.wrapper_command.clone().unwrap_or_default();
         let jvm_flags = entry.configuration.jvm_flags.clone().unwrap_or_default();
         let jvm_binary = entry.configuration.jvm_binary.clone().unwrap_or_default();
+        let java_runtime = entry.configuration.java_runtime.clone().unwrap_or_default();
         #[cfg(target_os = "linux")]
-        let linux_wrapper = entry.configuration.linux_wrapper.unwrap_or_default();
+        let linux_wrapper = entry.configuration.linux_wrapper.clone().unwrap_or_default();
         let system_libraries = entry.configuration.system_libraries.clone().unwrap_or_default();
 
         let instance_root_label = PathLabel::new(entry.root_path.clone(), true);
@@ -147,15 +150,9 @@ impl InstanceSettingsSubpage {
         });
         cx.subscribe_in(&loader_select_state, window, Self::on_loader_selected).detach();
 
-        cx.observe_in(instance, window, |page, instance, window, cx| {
+        cx.observe_in(instance, window, |page, instance, _window, cx| {
             let entry = instance.read(cx);
             page.instance_root_label = PathLabel::new(entry.root_path.clone(), true);
-            if page.loader_version_select_state.read(cx).selected_index(cx).is_none() {
-                let version = entry.configuration.preferred_loader_version.map(|s| s.as_str()).unwrap_or("Latest");
-                page.loader_version_select_state.update(cx, |select_state, cx| {
-                    select_state.set_selected_value(&version, window, cx);
-                });
-            }
         }).detach();
 
         let loader_version_select_state = cx.new(|cx| {
@@ -186,6 +183,20 @@ impl InstanceSettingsSubpage {
         });
         cx.subscribe(&jvm_flags_input_state, Self::on_jvm_flags_changed).detach();
 
+        let java_runtime_select = cx.new(|cx| {
+            let versions = SearchableVec::new(vec!["system", "java8", "java17", "java21", "java25"]);
+            let mut select_state = SelectState::new(versions, None, window, cx).searchable(true);
+            if !java_runtime.runtime_name.is_empty() {
+                let runtime_name = java_runtime.runtime_name.as_str();
+                let versions_arr = ["system", "java8", "java17", "java21", "java25"];
+                if let Some(index) = versions_arr.iter().position(|&v| v == runtime_name) {
+                    select_state.set_selected_index(Some(IndexPath::new(index)), window, cx);
+                }
+            }
+            select_state
+        });
+        cx.subscribe(&java_runtime_select, Self::on_java_runtime_selected).detach();
+
         let mut page = Self {
             data: data.clone(),
             instance: instance.clone(),
@@ -207,6 +218,8 @@ impl InstanceSettingsSubpage {
             jvm_flags_input_state,
             jvm_binary_enabled: jvm_binary.enabled,
             jvm_binary_path: jvm_binary.path.clone().map(|path| PathLabel::new(path, false)),
+            java_runtime_enabled: java_runtime.enabled,
+            java_runtime_select,
             override_glfw_enabled: system_libraries.override_glfw,
             override_glfw_path: glfw_path.map(|path| PathLabel::new(path, false)),
             override_openal_enabled: system_libraries.override_openal,
@@ -571,6 +584,26 @@ impl InstanceSettingsSubpage {
         }
     }
 
+    pub fn on_java_runtime_selected(
+        &mut self,
+        _state: Entity<SelectState<SearchableVec<&'static str>>>,
+        event: &SelectEvent<SearchableVec<&'static str>>,
+        _cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(value) = event;
+        let Some(value) = value else {
+            return;
+        };
+        
+        self.backend_handle.send(MessageToBackend::SetInstanceJavaRuntime {
+            id: self.instance_id,
+            java_runtime: InstanceJavaRuntimeConfiguration {
+                enabled: self.java_runtime_enabled,
+                runtime_name: value.to_string(),
+            }
+        });
+    }
+
     fn get_jvm_flags_configuration(&self, cx: &App) -> InstanceJvmFlagsConfiguration {
         let flags = self.jvm_flags_input_state.read(cx).value();
 
@@ -584,6 +617,17 @@ impl InstanceSettingsSubpage {
         InstanceJvmBinaryConfiguration {
             enabled: self.jvm_binary_enabled,
             path: self.jvm_binary_path.as_ref().map(PathLabel::path),
+            forced_java_version: None,
+        }
+    }
+
+    fn get_java_runtime_configuration(&self, _cx: &mut gpui::Context<Self>) -> InstanceJavaRuntimeConfiguration {
+        let runtime_name = self.java_runtime_select.read(_cx).selected_value()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "system".to_string());
+        InstanceJavaRuntimeConfiguration {
+            enabled: self.java_runtime_enabled,
+            runtime_name,
         }
     }
 
@@ -676,6 +720,7 @@ impl Render for InstanceSettingsSubpage {
         let wrapper_command_enabled = self.wrapper_command_enabled;
         let jvm_flags_enabled = self.jvm_flags_enabled;
         let jvm_binary_enabled = self.jvm_binary_enabled;
+        let java_runtime_enabled = self.java_runtime_enabled;
 
         let mut basic_content = v_flex()
             .gap_4()
@@ -827,6 +872,21 @@ impl Render for InstanceSettingsSubpage {
                         });
                     }, window, cx);
                 })))
+            )
+            .child(v_flex()
+                .gap_1()
+                .child(Checkbox::new("java_runtime").label(ts!("instance.java_runtime")).checked(java_runtime_enabled).on_click(cx.listener(|page, value, _, cx| {
+                    if page.java_runtime_enabled != *value {
+                        page.java_runtime_enabled = *value;
+                        page.backend_handle.send(MessageToBackend::SetInstanceJavaRuntime {
+                            id: page.instance_id,
+                            java_runtime: page.get_java_runtime_configuration(cx)
+                        });
+                        cx.notify();
+                    }
+                })))
+                .child(Select::new(&self.java_runtime_select)
+                    .disabled(!java_runtime_enabled))
             )
             .child(v_flex()
                 .gap_1()

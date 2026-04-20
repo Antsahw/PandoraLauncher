@@ -3,7 +3,7 @@ use std::{cell::RefCell, num::NonZeroUsize, ops::Range, rc::Rc, sync::Arc};
 use ftree::FenwickTree;
 use gpui::{prelude::*, *};
 use gpui_component::{
-    button::Button, h_flex, input::{Input, InputEvent, InputState}, scroll::{Scrollbar, ScrollbarHandle}, v_flex, ActiveTheme as _, Icon, Sizable
+    button::Button, h_flex, input::{Input, InputEvent, InputState}, scroll::{Scrollbar, ScrollbarHandle}, v_flex, ActiveTheme as _, Icon, Sizable, Disableable
 };
 use lru::LruCache;
 use rustc_hash::FxBuildHasher;
@@ -859,6 +859,7 @@ pub struct GameOutputRoot {
     server_command_state: Option<Entity<InputState>>,
     _search_task: Task<()>,
     _search_input_subscription: Subscription,
+    _server_command_subscription: Option<Subscription>,
     focus_handle: FocusHandle,
     // Tabbed mode fields
     is_tabbed: bool,
@@ -871,6 +872,8 @@ pub struct GameOutputRoot {
     instance_ids: std::collections::HashMap<usize, InstanceID>,
     instance_statuses: std::collections::HashMap<InstanceID, InstanceStatus>,
     server_names: std::collections::HashMap<usize, String>,
+    server_folders: std::collections::HashMap<usize, Arc<std::path::Path>>,
+    server_statuses: std::collections::HashMap<String, bool>, // Track if servers are running
     backend_handle: BackendHandle,
 }
 
@@ -989,6 +992,9 @@ impl GameOutputRoot {
 
         let _search_input_subscription = cx.subscribe_in(&search_state, window, Self::on_search_input_event);
 
+        let server_command_state = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command...").clean_on_escape());
+        let _server_command_subscription = cx.subscribe_in(&server_command_state, window, Self::on_server_command_input_event);
+
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
@@ -1036,9 +1042,10 @@ impl GameOutputRoot {
             _keep_alive: keep_alive,
             game_output,
             search_state,
-            server_command_state: None,
+            server_command_state: Some(server_command_state),
             _search_task: Task::ready(()),
             _search_input_subscription,
+            _server_command_subscription: Some(_server_command_subscription),
             focus_handle,
             is_tabbed: false,
             active_instance_id: None,
@@ -1050,6 +1057,8 @@ impl GameOutputRoot {
             instance_ids: std::collections::HashMap::new(),
             instance_statuses: std::collections::HashMap::new(),
             server_names: std::collections::HashMap::new(),
+            server_folders: std::collections::HashMap::new(),
+            server_statuses: std::collections::HashMap::new(),
             backend_handle,
         }
     }
@@ -1071,6 +1080,9 @@ impl GameOutputRoot {
         let search_state = cx.new(|cx| InputState::new(window, cx).placeholder(ts!("common.search")).clean_on_escape());
 
         let _search_input_subscription = cx.subscribe_in(&search_state, window, Self::on_search_input_event);
+
+        let server_command_state = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command...").clean_on_escape());
+        let _server_command_subscription = cx.subscribe_in(&server_command_state, window, Self::on_server_command_input_event);
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
@@ -1130,9 +1142,30 @@ impl GameOutputRoot {
         instance_ids.insert(output_id, instance_id);
 
         let mut server_names = std::collections::HashMap::new();
+        let mut server_folders = std::collections::HashMap::new();
+        let mut server_statuses = std::collections::HashMap::new();
         // If instance_id is dangling, it's a server
         if instance_id == bridge::instance::InstanceID::dangling() {
-            server_names.insert(output_id, instance_name.to_string());
+            let server_name = instance_name.to_string();
+            server_names.insert(output_id, server_name.clone());
+            server_statuses.insert(server_name.clone(), true); // Mark as running
+            // For servers, compute the correct server folder path
+            // Server path is ~/.local/share/PandoraLauncher/servers/{server_name}
+            if let Some(data_dir) = std::env::var("XDG_DATA_HOME")
+                .ok()
+                .and_then(|p| if p.is_empty() { None } else { Some(p) })
+                .or_else(|| {
+                    std::env::var("HOME").ok().map(|h| {
+                        format!("{}/.local/share", h)
+                    })
+                })
+            {
+                let server_path = std::path::PathBuf::from(data_dir)
+                    .join("PandoraLauncher")
+                    .join("servers")
+                    .join(&server_name);
+                server_folders.insert(output_id, server_path.into());
+            }
         }
 
         Self {
@@ -1140,9 +1173,10 @@ impl GameOutputRoot {
             _keep_alive: keep_alive,
             game_output,
             search_state,
-            server_command_state: None,
+            server_command_state: Some(server_command_state),
             _search_task: Task::ready(()),
             _search_input_subscription,
+            _server_command_subscription: Some(_server_command_subscription),
             focus_handle,
             is_tabbed: true,
             active_instance_id: Some(output_id),
@@ -1154,6 +1188,8 @@ impl GameOutputRoot {
             instance_ids,
             instance_statuses: std::collections::HashMap::new(),
             server_names,
+            server_folders,
+            server_statuses,
             backend_handle,
         }
     }
@@ -1181,7 +1217,26 @@ impl GameOutputRoot {
             
             // If instance_id is dangling, it's a server
             if instance_id == bridge::instance::InstanceID::dangling() {
-                self.server_names.insert(output_id, instance_name.to_string());
+                let server_name = instance_name.to_string();
+                self.server_names.insert(output_id, server_name.clone());
+                self.server_statuses.insert(server_name.clone(), true); // Mark as running
+                // For servers, compute the correct server folder path
+                // Server path is ~/.local/share/PandoraLauncher/servers/{server_name}
+                if let Some(data_dir) = std::env::var("XDG_DATA_HOME")
+                    .ok()
+                    .and_then(|p| if p.is_empty() { None } else { Some(p) })
+                    .or_else(|| {
+                        std::env::var("HOME").ok().map(|h| {
+                            format!("{}/.local/share", h)
+                        })
+                    })
+                {
+                    let server_path = std::path::PathBuf::from(data_dir)
+                        .join("PandoraLauncher")
+                        .join("servers")
+                        .join(&server_name);
+                    self.server_folders.insert(output_id, server_path.into());
+                }
             }
         }
         
@@ -1212,6 +1267,57 @@ impl GameOutputRoot {
 
     pub fn update_instance_status(&mut self, instance_id: InstanceID, status: InstanceStatus) {
         self.instance_statuses.insert(instance_id, status);
+    }
+
+    pub fn close_tab(&mut self, instance_id: usize, cx: &mut Context<Self>) {
+        // Check if instance is still running
+        if let Some(instance_id_obj) = self.instance_ids.get(&instance_id) {
+            if let Some(status) = self.instance_statuses.get(instance_id_obj) {
+                if *status == InstanceStatus::Running {
+                    return; // Cannot close running instances
+                }
+            }
+        }
+
+        // Check if server is still running
+        if let Some(server_name) = self.server_names.get(&instance_id) {
+            if let Some(is_running) = self.server_statuses.get(server_name) {
+                if *is_running {
+                    return; // Cannot close running servers
+                }
+            }
+        }
+
+        // Tab must exist to be closed
+        if !self.tabs.contains_key(&instance_id) {
+            return;
+        }
+
+        // Remove from all maps
+        self.tabs.remove(&instance_id);
+        self.instance_names.remove(&instance_id);
+        self.instance_folders.remove(&instance_id);
+        self.dot_minecraft_folders.remove(&instance_id);
+        self.instance_keep_alives.remove(&instance_id);
+        self.instance_ids.remove(&instance_id);
+        self.server_names.remove(&instance_id);
+        self.server_folders.remove(&instance_id);
+
+        // If this was the active tab being viewed, switch to another one
+        if self.active_instance_id == Some(instance_id) {
+            if let Some(&next_instance_id) = self.tabs.keys().next() {
+                self.active_instance_id = Some(next_instance_id);
+                if let Some(game_output) = self.tabs.get(&next_instance_id) {
+                    self.game_output = game_output.clone();
+                    let scroll_state = Rc::clone(&self.game_output.read(cx).scroll_state);
+                    self.scroll_handler = ScrollHandler { state: scroll_state };
+                }
+            } else {
+                self.active_instance_id = None;
+            }
+        }
+
+        cx.notify();
     }
 
     fn on_search_input_event(
@@ -1302,6 +1408,37 @@ impl GameOutputRoot {
 
         state.update(cx, |input, cx| input.set_loading(true, window, cx));
     }
+
+    fn on_server_command_input_event(
+        &mut self,
+        state: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let InputEvent::PressEnter { secondary: false } = event else {
+            return;
+        };
+
+        let command = state.read(cx).value();
+        if command.trim().is_empty() {
+            return;
+        }
+
+        // Check if we have an active server
+        if let Some(active_id) = self.active_instance_id {
+            if let Some(server_name) = self.server_names.get(&active_id).cloned() {
+                // Send the command to the backend
+                self.backend_handle.send(MessageToBackend::SendServerCommand {
+                    name: server_name.into(),
+                    command: command.as_str().into(),
+                });
+
+                // Clear the input field
+                state.update(cx, |state, cx| state.set_value("", window, cx));
+            }
+        }
+    }
 }
 
 impl Render for GameOutputRoot {
@@ -1339,30 +1476,71 @@ impl Render for GameOutputRoot {
         // Build bottom bar with kill button (only if instance is running)
         let mut bottom_bar = h_flex()
             .w_full()
-            .justify_end()
             .px_2()
             .py_2()
-            .gap_2();
+            .gap_2()
+            .items_center();
 
-        // Always add folder and kill buttons in order: instance folder, minecraft folder, kill
+        // Always add folder, command input, and kill buttons
         if let Some(active_id) = self.active_instance_id {
             if let Some(instance_id) = self.instance_ids.get(&active_id).copied() {
-                // Create button container
-                let mut action_buttons = h_flex()
-                    .gap_1();
+                // Check if this is a server (has command input)
+                let is_server = self.server_names.get(&active_id).is_some();
                 
-                // Add .minecraft folder button
-                if let Some(dot_minecraft_path) = self.dot_minecraft_folders.get(&active_id) {
-                    let minecraft_path = dot_minecraft_path.clone();
-                    let minecraft_btn = Button::new("open_minecraft")
+                // Create button container with appropriate layout
+                let mut action_buttons = if is_server {
+                    h_flex()
+                        .flex_1()  // For servers, flex to fill space for the command input
+                        .gap_1()
+                        .items_center()
+                } else {
+                    h_flex()
+                        .flex_1()  // Stretch to fill space
+                        .justify_end()  // For instances, align buttons to the right
+                        .gap_1()
+                        .items_center()
+                };
+                
+                // Add command input bar if we have a server (FIRST)
+                if is_server {
+                    if let Some(command_state) = &self.server_command_state {
+                        let command_input = Input::new(command_state)
+                            .flex_1();
+                        
+                        action_buttons = action_buttons.child(command_input);
+                    }
+                }
+                
+                // Add folder button - check both instance and server folders
+                let folder_path = if let Some(server_path) = self.server_folders.get(&active_id) {
+                    Some(server_path.clone())
+                } else if let Some(instance_path) = self.instance_folders.get(&active_id) {
+                    // For instances, always ensure we open the .minecraft folder
+                    let dot_minecraft = if let Some(dot_minecraft_path) = self.dot_minecraft_folders.get(&active_id) {
+                        dot_minecraft_path.clone()
+                    } else {
+                        // Fallback: append .minecraft to instance path if not already in dot_minecraft_folders
+                        let mut path = instance_path.to_path_buf();
+                        if !path.ends_with(".minecraft") {
+                            path.push(".minecraft");
+                        }
+                        Arc::from(path)
+                    };
+                    Some(dot_minecraft)
+                } else {
+                    None
+                };
+                
+                if let Some(folder_path) = folder_path {
+                    let folder_btn = Button::new("open_folder")
                         .icon(PandoraIcon::Folder)
                         .on_click(cx.listener(move |_, _, _, _| {
-                            let _ = open::that(minecraft_path.as_ref());
+                            let _ = open::that(folder_path.as_ref());
                         }))
                         .p_1()
                         .h(px(24.0));
                     
-                    action_buttons = action_buttons.child(minecraft_btn);
+                    action_buttons = action_buttons.child(folder_btn);
                 }
                 
                 // Add kill button last
@@ -1372,9 +1550,12 @@ impl Render for GameOutputRoot {
                     .map(|status| *status == InstanceStatus::Running)
                     .unwrap_or(false);
                 
-                let is_server = self.active_instance_id
+                // Check if server is running
+                let is_server_running = self.active_instance_id
                     .and_then(|output_id| self.server_names.get(&output_id))
-                    .is_some();
+                    .and_then(|server_name| self.server_statuses.get(server_name))
+                    .copied()
+                    .unwrap_or(false);
                 
                 let mut kill_btn = Button::new("kill_instance")
                     .icon(PandoraIcon::Close)
@@ -1387,16 +1568,21 @@ impl Render for GameOutputRoot {
                         // Send kill instance message to backend
                         root.backend_handle.send(MessageToBackend::KillInstance { id: instance_id });
                     }));
-                } else if is_server {
+                } else if is_server_running {
                     kill_btn = kill_btn.on_click(cx.listener(move |root, _, _, _cx| {
                         // Send stop server message to backend
                         if let Some(server_name) = root.active_instance_id
                             .and_then(|output_id| root.server_names.get(&output_id))
                             .cloned()
                         {
+                            // Mark server as stopped immediately
+                            root.server_statuses.insert(server_name.clone(), false);
                             root.backend_handle.send(MessageToBackend::StopServer { name: server_name.into() });
                         }
                     }));
+                } else {
+                    // Disable kill button if instance/server is not running
+                    kill_btn = kill_btn.disabled(true);
                 }
                 
                 action_buttons = action_buttons.child(kill_btn);
@@ -1405,44 +1591,62 @@ impl Render for GameOutputRoot {
         }
 
         // Build tab bar if in tabbed mode
+        // No fixed limit - tabs fit naturally based on available space
+        let mut tab_ids: Vec<_> = self.tabs.keys().copied().collect();
+        tab_ids.sort();
+        
+        // Build tab bar - show all tabs, they'll shrink/wrap as needed
         let mut tab_bar = h_flex()
             .w_full()
             .gap_2()
-            .px_2();
-
-        for (instance_id, _game_output) in &self.tabs {
-            let is_active = self.active_instance_id == Some(*instance_id);
-            let instance_id_copy = *instance_id;
-            let instance_name = self.instance_names.get(instance_id)
+            .px_2()
+            .items_center();
+        
+        // Render all tabs - they'll naturally wrap/shrink based on available space
+        for instance_id in tab_ids {
+            let _is_viewed = self.active_instance_id == Some(instance_id);
+            let instance_name = self.instance_names.get(&instance_id)
                 .cloned()
                 .unwrap_or_else(|| format!("Instance {}", instance_id).into());
 
-            let tab = if is_active {
-                Button::new(format!("tab_{}", instance_id))
-                    .label(instance_name)
-                    .on_click(cx.listener(move |root, _, _, cx| {
-                        root.active_instance_id = Some(instance_id_copy);
-                        // Switch to the new instance's game output
-                        if let Some(game_output) = root.tabs.get(&instance_id_copy) {
-                            root.game_output = game_output.clone();
-                            let scroll_state = Rc::clone(&root.game_output.read(cx).scroll_state);
-                            root.scroll_handler = ScrollHandler { state: scroll_state };
+            // Check if instance/server is running
+            let is_running = {
+                let mut running = false;
+                if let Some(inst_id) = self.instance_ids.get(&instance_id) {
+                    if let Some(status) = self.instance_statuses.get(inst_id) {
+                        running = *status == InstanceStatus::Running;
+                    }
+                }
+                if !running {
+                    if let Some(server_name) = self.server_names.get(&instance_id) {
+                        if let Some(is_srv_running) = self.server_statuses.get(server_name) {
+                            running = *is_srv_running;
                         }
-                        cx.notify();
-                    }))
+                    }
+                }
+                running
+            };
+
+            // Always add right-click handler if NOT running (dead)
+            let tab = Button::new(format!("tab_{}", instance_id))
+                .label(instance_name)
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    root.active_instance_id = Some(instance_id);
+                    if let Some(game_output) = root.tabs.get(&instance_id) {
+                        root.game_output = game_output.clone();
+                        let scroll_state = Rc::clone(&root.game_output.read(cx).scroll_state);
+                        root.scroll_handler = ScrollHandler { state: scroll_state };
+                    }
+                    cx.notify();
+                }));
+            
+            let tab = if !is_running {
+                tab.on_mouse_down(MouseButton::Right, cx.listener(move |root, _, window, cx| {
+                    window.prevent_default();
+                    root.close_tab(instance_id, cx);
+                }))
             } else {
-                Button::new(format!("tab_{}", instance_id))
-                    .label(instance_name)
-                    .on_click(cx.listener(move |root, _, _, cx| {
-                        root.active_instance_id = Some(instance_id_copy);
-                        // Switch to the new instance's game output
-                        if let Some(game_output) = root.tabs.get(&instance_id_copy) {
-                            root.game_output = game_output.clone();
-                            let scroll_state = Rc::clone(&root.game_output.read(cx).scroll_state);
-                            root.scroll_handler = ScrollHandler { state: scroll_state };
-                        }
-                        cx.notify();
-                    }))
+                tab
             };
 
             tab_bar = tab_bar.child(tab);

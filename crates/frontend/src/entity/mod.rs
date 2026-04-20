@@ -20,6 +20,7 @@ pub struct DataEntities {
     pub backend_handle: BackendHandle,
     pub theme_folder: Arc<Path>,
     pub panic_messages: Arc<PanicMessages>,
+    pub server_files: Arc<RwLock<std::collections::HashMap<String, String>>>,
 }
 
 pub struct PanicMessages {

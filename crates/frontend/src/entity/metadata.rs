@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::ts;
 use bridge::{handle::BackendHandle, keep_alive::KeepAliveHandle, message::MessageToBackend, meta::{MetadataRequest, MetadataResult}};
 use gpui::{prelude::*, *};
-use schema::{curseforge::{CurseforgeGetModFilesResult, CurseforgeSearchResult}, fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, modrinth::{ModrinthProjectResult, ModrinthProjectVersionsResult, ModrinthSearchResult}, version_manifest::MinecraftVersionManifest};
+use schema::{curseforge::{CurseforgeGetModFilesResult, CurseforgeSearchResult}, fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, modrinth::{ModrinthProjectResult, ModrinthProjectVersionsResult, ModrinthSearchResult}, server_software_versions::ServerSoftwareVersions, version_manifest::MinecraftVersionManifest};
 
 #[derive(Debug)]
 pub enum FrontendMetadataState {
@@ -141,3 +141,18 @@ define_as_metadata_result!(NeoforgeMavenManifest);
 define_as_metadata_result!(ModrinthProjectResult);
 define_as_metadata_result!(CurseforgeSearchResult);
 define_as_metadata_result!(CurseforgeGetModFilesResult);
+
+impl AsMetadataResult<Arc<ServerSoftwareVersions>> for FrontendMetadataState {
+    fn result(&self) -> FrontendMetadataResult<'_, Arc<ServerSoftwareVersions>> {
+        match self {
+            FrontendMetadataState::Loading => FrontendMetadataResult::Loading,
+            FrontendMetadataState::Loaded { result, .. } => {
+                match result {
+                    Ok(MetadataResult::ServerSoftwareVersions(result)) => FrontendMetadataResult::Loaded(result),
+                    Ok(_) => FrontendMetadataResult::Error(ts!("system.metadata_error")),
+                    Err(error) => FrontendMetadataResult::Error(SharedString::new(error.clone())),
+                }
+            },
+        }
+    }
+}

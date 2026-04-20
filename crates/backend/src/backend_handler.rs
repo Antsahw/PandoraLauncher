@@ -2,7 +2,7 @@ use std::{borrow::Cow, io::{BufRead, Read}, sync::Arc, time::{Duration, Instant,
 
 use auth::{credentials::AccountCredentials, models::{MinecraftAccessToken}, secret::PlatformSecretStorage};
 use bridge::{
-    install::{ContentDownload, ContentInstall, ContentInstallFile, ContentInstallPath, InstallTarget}, instance::{ContentSummary, ContentType}, keep_alive::KeepAlive, message::{AccountCapesResult, AccountSkinResult, BackendConfigWithPassword, LogFiles, MessageToBackend, MessageToFrontend}, meta::MetadataResult, modal_action::{ModalAction, ModalActionVisitUrl, ProgressTracker, ProgressTrackerFinishType}, safe_path::SafePath, serial::AtomicOptionSerial
+    game_output::GameOutputLogLevel, install::{ContentDownload, ContentInstall, ContentInstallFile, ContentInstallPath, InstallTarget}, instance::{ContentSummary, ContentType}, keep_alive::KeepAlive, message::{AccountCapesResult, AccountSkinResult, BackendConfigWithPassword, LogFiles, MessageToBackend, MessageToFrontend}, meta::MetadataResult, modal_action::{ModalAction, ModalActionVisitUrl, ProgressTracker, ProgressTrackerFinishType}, safe_path::SafePath, serial::AtomicOptionSerial
 };
 use futures::TryFutureExt;
 use schema::{auxiliary::AuxiliaryContentMeta, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeGetFilesRequest, CurseforgeGetModFilesRequest, CurseforgeModLoaderType}, minecraft_profile::MinecraftProfileResponse, modrinth::{ModrinthLoader, ModrinthSideRequirement}, version::{LaunchArgument, LaunchArgumentValue}};
@@ -22,6 +22,7 @@ impl BackendState {
             MessageToBackend::RequestMetadata { request, force_reload } => {
                 let meta = self.meta.clone();
                 let send = self.send.clone();
+                let backend_arc = self.clone();
                 tokio::task::spawn(async move {
                     let (result, keep_alive_handle) = match request {
                         bridge::meta::MetadataRequest::MinecraftVersionManifest => {
@@ -60,6 +61,16 @@ impl BackendState {
                             let (result, handle) = meta.fetch_with_keepalive(&CurseforgeGetModFilesMetadataItem(request), force_reload).await;
                             (result.map(MetadataResult::CurseforgeGetModFilesResult), handle)
                         },
+                        bridge::meta::MetadataRequest::ServerSoftwareVersions(ref software) => {
+                            // Fetch available server versions directly
+                            let software_name = software.clone();
+                            let versions = backend_arc.get_available_server_versions(&software_name).await;
+                            let result_data = Arc::new(schema::server_software_versions::ServerSoftwareVersions {
+                                software: software_name,
+                                versions,
+                            });
+                            (Ok::<_, MetaLoadError>(MetadataResult::ServerSoftwareVersions(result_data)), None)
+                        },
                     };
                     let result = result.map_err(|err| format!("{}", err).into());
                     send.send(MessageToFrontend::MetadataResult {
@@ -84,10 +95,11 @@ impl BackendState {
             MessageToBackend::CreateInstance { name, version, loader, icon } => {
                 self.create_instance(&name, &version, loader, icon).await;
             },
-            MessageToBackend::CreateServer { name, version, server_software, icon } => {
+            MessageToBackend::CreateServer { name, version, server_software, icon, modal_action } => {
                 let clone = self.clone();
+                let modal_action_clone = modal_action.clone();
                 tokio::spawn(async move {
-                    let _ = clone.create_server(&name, &version, &server_software, icon).await;
+                    let _ = clone.create_server(&name, &version, &server_software, icon, &modal_action_clone).await;
                 });
             },
             MessageToBackend::StartServer { name, modal_action } => {
@@ -172,6 +184,113 @@ impl BackendState {
                     }
                 }
             },
+            MessageToBackend::ReadServerFile { name, filename } => {
+                log::info!("Reading server file: {}/{}", name, filename);
+                
+                let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+                    std::path::PathBuf::from(dir)
+                } else {
+                    let base_dirs = directories::BaseDirs::new().unwrap();
+                    let data_dir = base_dirs.data_dir();
+                    data_dir.join("PandoraLauncher")
+                };
+                let servers_dir = pandora_dir.join("servers");
+                let server_path = servers_dir.join(name.as_str());
+                let file_path = server_path.join(filename.as_str());
+                
+                if !server_path.exists() {
+                    self.send.send_error(format!("Server '{}' not found", name));
+                    return;
+                }
+                
+                match std::fs::read_to_string(&file_path) {
+                    Ok(content) => {
+                        self.send.send_info(format!("Server file '{}' read successfully", filename));
+                        self.send.send(MessageToFrontend::ServerFileContent {
+                            filename,
+                            content: content.into(),
+                        });
+                    },
+                    Err(e) => {
+                        self.send.send_error(format!("Failed to read server file '{}': {}", filename, e));
+                    }
+                }
+            },
+            MessageToBackend::WriteServerFile { name, filename, content } => {
+                log::info!("Writing server file: {}/{}", name, filename);
+                
+                let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+                    std::path::PathBuf::from(dir)
+                } else {
+                    let base_dirs = directories::BaseDirs::new().unwrap();
+                    let data_dir = base_dirs.data_dir();
+                    data_dir.join("PandoraLauncher")
+                };
+                let servers_dir = pandora_dir.join("servers");
+                let server_path = servers_dir.join(name.as_str());
+                let file_path = server_path.join(filename.as_str());
+                
+                if !server_path.exists() {
+                    self.send.send_error(format!("Server '{}' not found", name));
+                    return;
+                }
+                
+                if let Err(e) = std::fs::write(&file_path, content.as_ref()) {
+                    self.send.send_error(format!("Failed to write server file '{}': {}", filename, e));
+                } else {
+                    self.send.send_success(format!("Server file '{}' written successfully", filename));
+                }
+            },
+            MessageToBackend::SetServerJavaRuntime { name, java_runtime } => {
+                log::info!("Setting server '{}' Java runtime to '{}'", name, java_runtime);
+                
+                let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+                    std::path::PathBuf::from(dir)
+                } else {
+                    let base_dirs = directories::BaseDirs::new().unwrap();
+                    let data_dir = base_dirs.data_dir();
+                    data_dir.join("PandoraLauncher")
+                };
+                let servers_dir = pandora_dir.join("servers");
+                let server_path = servers_dir.join(name.as_str());
+                let config_path = server_path.join(".minecraft/server_config.json");
+                
+                if !server_path.exists() {
+                    self.send.send_error(format!("Server '{}' not found", name));
+                    return;
+                }
+                
+                // Ensure .minecraft directory exists
+                let _ = std::fs::create_dir_all(server_path.join(".minecraft"));
+                
+                // Load existing config or create new one
+                let mut config = if config_path.exists() {
+                    serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap_or_default())
+                        .unwrap_or_else(|_| serde_json::json!({}))
+                } else {
+                    serde_json::json!({})
+                };
+                
+                // Update Java runtime with correct nested structure
+                if let Some(java_obj) = config.get_mut("java") {
+                    if let Some(obj) = java_obj.as_object_mut() {
+                        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+                        obj.insert("runtime_name".to_string(), serde_json::Value::String(java_runtime.to_string()));
+                    }
+                } else {
+                    config["java"] = serde_json::json!({
+                        "enabled": true,
+                        "runtime_name": java_runtime.to_string()
+                    });
+                }
+                
+                // Write back
+                if let Err(e) = std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+                    self.send.send_error(format!("Failed to save server Java runtime: {}", e));
+                } else {
+                    self.send.send_success(format!("Server Java runtime set to '{}'", java_runtime));
+                }
+            },
             MessageToBackend::DeleteInstance { id } => {
                 if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
                     let result = std::fs::remove_dir_all(&instance.root_path);
@@ -248,6 +367,13 @@ impl BackendState {
                     });
                 }
             },
+            MessageToBackend::SetInstanceJavaRuntime { id, java_runtime } => {
+                if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
+                    instance.configuration.modify(|configuration| {
+                        configuration.java_runtime = Some(java_runtime);
+                    });
+                }
+            },
             MessageToBackend::SetInstanceLinuxWrapper { id, linux_wrapper } => {
                 if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
                     instance.configuration.modify(|configuration| {
@@ -274,6 +400,8 @@ impl BackendState {
                     return;
                 }
 
+                let instance_name = instance.name.clone();
+                
                 for mut process in instance.processes.drain(..) {
                     let result = process.kill();
                     if result.is_err() {
@@ -282,6 +410,17 @@ impl BackendState {
                     }
                 }
 
+                if let Some(game_output_id) = instance.game_output_id {
+                    self.send.send(MessageToFrontend::AddGameOutput {
+                        id: game_output_id,
+                        time: chrono::Local::now().timestamp_millis(),
+                        level: GameOutputLogLevel::Info,
+                        text: Arc::from([Arc::from("Pandora: Killed")]),
+                    });
+                }
+                
+                // Send stopping notification
+                self.send.send_info(format!("Stopping instance '{}'...", instance_name));
                 self.send.send(instance.create_modify_message());
             },
             MessageToBackend::StartInstance {
@@ -334,7 +473,8 @@ impl BackendState {
                 let launch_tracker = ProgressTracker::new(Arc::from("Launching"), self.send.clone());
                 modal_action.trackers.push(launch_tracker.clone());
 
-                let result = self.launcher.launch(&self.redirecting_http_client, dot_minecraft, configuration, quick_play, login_info, add_mods, &launch_tracker, &modal_action).await;
+                let java_config = self.config.write().get().java_runtimes.clone();
+                let result = self.launcher.launch(&self.redirecting_http_client, dot_minecraft, configuration, quick_play, login_info, add_mods, &launch_tracker, &modal_action, &java_config).await;
 
                 if matches!(result, Err(LaunchError::CancelledByUser)) {
                     self.send.send(MessageToFrontend::CloseModal);
@@ -350,7 +490,10 @@ impl BackendState {
                         if !self.config.write().get().dont_open_game_output_when_launching {
                             if let Some(stdout) = child.stdout.take() {
                                 let instance_name = self.instance_state.read().instances.get(id).map(|i| i.name.as_str()).unwrap_or("Unknown");
-                                log_reader::start_game_output(stdout, child.stderr.take(), self.send.clone(), instance_name);
+                                let game_output_id = log_reader::start_game_output(stdout, child.stderr.take(), self.send.clone(), instance_name);
+                                if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
+                                    instance.game_output_id = Some(game_output_id);
+                                }
                             }
                         }
 
@@ -1139,6 +1282,52 @@ impl BackendState {
 
                         let _ = channel.send(LogFiles { paths, total_gzipped_size: total_gzipped_size.min(usize::MAX as u64) as usize });
                     }
+                }
+            },
+            MessageToBackend::GetServerLogFiles { name, channel } => {
+                let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+                    std::path::PathBuf::from(dir)
+                } else {
+                    let base_dirs = directories::BaseDirs::new().unwrap();
+                    let data_dir = base_dirs.data_dir();
+                    data_dir.join("PandoraLauncher")
+                };
+                let servers_dir = pandora_dir.join("servers");
+                let server_path = servers_dir.join(name.as_str());
+                let logs = server_path.join("logs");
+
+                if let Ok(read_dir) = std::fs::read_dir(logs) {
+                    let mut paths_with_time = Vec::new();
+                    let mut total_gzipped_size = 0;
+
+                    for file in read_dir {
+                        let Ok(entry) = file else {
+                            continue;
+                        };
+                        let Ok(metadata) = entry.metadata() else {
+                            continue;
+                        };
+                        let filename = entry.file_name();
+                        let Some(filename) = filename.to_str() else {
+                            continue;
+                        };
+
+                        if filename.ends_with(".log.gz") {
+                            total_gzipped_size += metadata.len();
+                        } else if !filename.ends_with(".log") {
+                            continue;
+                        }
+
+                        let created = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
+                        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+
+                        paths_with_time.push((Arc::from(entry.path()), created.max(modified)));
+                    }
+
+                    paths_with_time.sort_by_key(|(_, t)| *t);
+                    let paths = paths_with_time.into_iter().map(|(p, _)| p).rev().collect();
+
+                    let _ = channel.send(LogFiles { paths, total_gzipped_size: total_gzipped_size.min(usize::MAX as u64) as usize });
                 }
             },
             MessageToBackend::GetImportFromOtherLauncherPaths { channel } => {
@@ -2125,6 +2314,35 @@ impl BackendState {
             return;
         }
 
+        // Load server configuration for Java settings
+        let server_config_path = server_dir.join(".minecraft").join("server_config.json");
+        let server_runtime_name: Option<String> = if server_config_path.exists() {
+            if let Ok(content) = tokio::fs::read_to_string(&server_config_path).await {
+                if let Ok(config) = serde_json::from_str::<schema::server_config::ServerConfiguration>(&content) {
+                    config.java.and_then(|java| {
+                        if java.enabled && !java.runtime_name.is_empty() {
+                            Some(java.runtime_name)
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Resolve which Java to use
+        let java_config = self.config.write().get().java_runtimes.clone();
+        let java_executable = crate::java_manager::resolve_java_executable(
+            &java_config,
+            server_runtime_name.as_deref(),
+        );
+
         // Find the server JAR file
         let mut jar_path = None;
         if let Ok(entries) = std::fs::read_dir(&server_dir) {
@@ -2144,8 +2362,8 @@ impl BackendState {
             return;
         };
 
-        // Prepare process
-        let mut cmd = std::process::Command::new("java");
+        // Prepare process with resolved Java
+        let mut cmd = std::process::Command::new(&java_executable);
         cmd
             .arg("-Xmx1024M")
             .arg("-Xms512M")
@@ -2164,7 +2382,8 @@ impl BackendState {
                 
                 // Start game output like instances do
                 if let Some(stdout) = child.stdout.take() {
-                    log_reader::start_game_output(stdout, child.stderr.take(), self.send.clone(), name);
+                    let game_output_id = log_reader::start_game_output(stdout, child.stderr.take(), self.send.clone(), name);
+                    self.server_game_output_ids.write().insert(name.to_string(), game_output_id);
                 }
 
                 // Store the child process for later stopping
@@ -2184,7 +2403,14 @@ impl BackendState {
         if let Some(mut child) = self.server_processes.write().remove(name) {
             match child.kill() {
                 Ok(_) => {
-                    self.send.send_info(format!("Server '{}' stopped", name));
+                    if let Some(game_output_id) = self.server_game_output_ids.write().remove(name) {
+                        self.send.send(MessageToFrontend::AddGameOutput {
+                            id: game_output_id,
+                            time: chrono::Local::now().timestamp_millis(),
+                            level: GameOutputLogLevel::Info,
+                            text: Arc::from([Arc::from("Pandora: Killed")]),
+                        });
+                    }
                     let _ = child.wait();
                 }
                 Err(e) => {

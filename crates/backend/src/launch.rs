@@ -90,6 +90,7 @@ impl Launcher {
         add_mods: Vec<PathBuf>,
         launch_tracker: &ProgressTracker,
         modal_action: &ModalAction,
+        java_config: &schema::backend_config::JavaRuntimesConfig,
     ) -> Result<Child, LaunchError> {
         log::info!("Launching {:?}", dot_minecraft_path);
 
@@ -98,7 +99,7 @@ impl Launcher {
         log::debug!("Creating launch version");
 
         let (version_info, add_vanilla_jar) = tokio::select! {
-            result = self.create_launch_version(http_client, &modal_action.trackers, launch_tracker, &instance_info) => result?,
+            result = self.create_launch_version(http_client, &modal_action.trackers, launch_tracker, &instance_info, java_config) => result?,
             _ = modal_action.request_cancel.cancelled() => {
                 self.sender.send(MessageToFrontend::CloseModal);
                 return Err(LaunchError::CancelledByUser);
@@ -141,6 +142,7 @@ impl Launcher {
             &version_info,
             &modal_action.trackers,
             launch_tracker,
+            java_config,
         );
         let load_assets_future =
             self.load_assets(&self.meta, http_client, &dot_minecraft_path, &version_info, &modal_action.trackers, launch_tracker);
@@ -249,6 +251,7 @@ impl Launcher {
         progress_trackers: &ProgressTrackers,
         launch_tracker: &ProgressTracker,
         instance_info: &InstanceConfiguration,
+        java_config: &schema::backend_config::JavaRuntimesConfig,
     ) -> Result<(Arc<MinecraftVersion>, AddVanillaJar), LaunchError> {
         match instance_info.loader {
             Loader::Vanilla => {
@@ -410,7 +413,8 @@ impl Launcher {
                     "net/minecraftforge/forge/{0}/forge-{0}-installer.jar",
                     "https://maven.minecraftforge.net/net/minecraftforge/forge/{0}/forge-{0}-installer.jar",
                     true,
-                    false
+                    false,
+                    java_config
                 ).await
             },
             Loader::NeoForge => {
@@ -430,7 +434,8 @@ impl Launcher {
                     "net/neoforged/neoforge/{0}/neoforge-{0}-installer.jar",
                     "https://maven.neoforged.net/releases/net/neoforged/neoforge/{0}/neoforge-{0}-installer.jar",
                     false,
-                    true
+                    true,
+                    java_config
                 ).await
             },
             Loader::Unknown => todo!(),
@@ -450,6 +455,7 @@ impl Launcher {
         installer_url: &'static str,
         check_mirrors: bool,
         neoforge_versioning: bool,
+        java_config: &schema::backend_config::JavaRuntimesConfig,
     ) -> Result<(Arc<MinecraftVersion>, AddVanillaJar), LaunchError> {
         launch_tracker.add_count(1);
         launch_tracker.notify();
@@ -532,6 +538,7 @@ impl Launcher {
             &base_version,
             progress_trackers,
             launch_tracker,
+            java_config,
         );
         let load_installer_library_future = self.load_libraries(http_client, artifacts, progress_trackers, launch_tracker);
 
@@ -883,11 +890,30 @@ impl Launcher {
         version_info: &MinecraftVersion,
         progress_trackers: &ProgressTrackers,
         launch_tracker: &ProgressTracker,
+        java_config: &schema::backend_config::JavaRuntimesConfig,
     ) -> Result<PathBuf, LoadJavaRuntimeError> {
         if let Some(jvm_binary) = &configuration.jvm_binary {
             if jvm_binary.enabled && let Some(path) = &jvm_binary.path {
                 if let Some(binary) = Self::search_for_java_binary(&path) {
                     return Ok(binary);
+                }
+            }
+        }
+
+        // Check per-instance java_runtime selection
+        if let Some(java_runtime) = &configuration.java_runtime {
+            if java_runtime.enabled && !java_runtime.runtime_name.is_empty() {
+                let java_path = crate::java_manager::resolve_java_executable(java_config, Some(&java_runtime.runtime_name));
+                
+                // If not "system" java, verify the path actually exists/works
+                if java_runtime.runtime_name != "system" {
+                    if let Some(binary) = Self::search_for_java_binary(&java_path) {
+                        return Ok(binary);
+                    }
+                    // If the configured runtime isn't found, fall through to default behavior
+                } else {
+                    // "system" java - just return it
+                    return Ok(java_path);
                 }
             }
         }
@@ -2071,9 +2097,9 @@ pub struct LaunchContext {
 impl LaunchContext {
     pub fn launch(mut self, version_info: &MinecraftVersion) -> std::io::Result<std::process::Child> {
         #[cfg(target_os = "linux")]
-        let use_mangohud = self.configuration.linux_wrapper.map(|w| w.use_mangohud).unwrap_or(false);
+        let use_mangohud = self.configuration.linux_wrapper.as_ref().map(|w| w.use_mangohud).unwrap_or(false);
         #[cfg(target_os = "linux")]
-        let use_gamemode = self.configuration.linux_wrapper.map(|w| w.use_gamemode).unwrap_or(false);
+        let use_gamemode = self.configuration.linux_wrapper.as_ref().map(|w| w.use_gamemode).unwrap_or(false);
 
         let mut wrapping_command = Vec::new();
         #[cfg(target_os = "linux")]
@@ -2111,10 +2137,10 @@ impl LaunchContext {
 
 
         #[cfg(target_os = "linux")] {
-            if self.configuration.linux_wrapper.map(|w| w.use_discrete_gpu).unwrap_or(true) {
+            if self.configuration.linux_wrapper.as_ref().map(|w| w.use_discrete_gpu).unwrap_or(true) {
                 command.env("DRI_PRIME", "1");
             }
-            if self.configuration.linux_wrapper.map(|w| w.disable_gl_threaded_optimizations).unwrap_or(false) {
+            if self.configuration.linux_wrapper.as_ref().map(|w| w.disable_gl_threaded_optimizations).unwrap_or(false) {
                 command.env("__GL_THREADED_OPTIMIZATIONS", "0");
             }
         }

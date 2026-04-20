@@ -592,3 +592,4 @@ impl<'a> MetadataItem for CurseforgeGetFilesMetadataItem<'a> {
         Ok(serde_json::from_slice(bytes)?)
     }
 }
+

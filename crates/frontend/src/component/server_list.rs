@@ -35,6 +35,46 @@ impl ServerList {
         }
     }
 
+    /// Reload the server list items from disk
+    pub fn reload_from_disk(&mut self) {
+        let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+            PathBuf::from(dir)
+        } else {
+            let base_dirs = directories::BaseDirs::new().unwrap();
+            let data_dir = base_dirs.data_dir();
+            data_dir.join("PandoraLauncher")
+        };
+        let servers_dir = pandora_dir.join("servers");
+
+        let mut items = Vec::new();
+        if servers_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&servers_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let metadata_path = path.join("server_metadata.json");
+                        if let Ok(content) = std::fs::read_to_string(&metadata_path) {
+                            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&content) {
+                                let name = metadata["name"].as_str().unwrap_or("Unknown").to_string();
+                                let software = metadata["server_software"].as_str().unwrap_or("Paper").to_string();
+                                let version = metadata["minecraft_version"].as_str().unwrap_or("1.20").to_string();
+                                
+                                items.push(ServerEntry {
+                                    name: SharedString::from(name),
+                                    software: SharedString::from(software),
+                                    version: SharedString::from(version),
+                                    path: path.clone(),
+                                    status: ServerStatus::Stopped,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.items = items;
+    }
+
     pub fn create_table(data: &crate::entity::DataEntities, window: &mut Window, cx: &mut App) -> Entity<gpui_component::table::TableState<Self>> {
         let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
             PathBuf::from(dir)
@@ -146,6 +186,17 @@ impl ServerList {
                 }
             });
 
+        let open_folder_button = Button::new(("open_folder", index))
+            .info()
+            .small()
+            .icon(PandoraIcon::FolderOpen)
+            .on_click({
+                let path = item.path.clone();
+                move |_, window, cx| {
+                    crate::open_folder(&path, window, cx);
+                }
+            });
+
         let theme = cx.theme();
         v_flex()
             .flex_1()
@@ -168,8 +219,9 @@ impl ServerList {
             )
             .child(h_flex()
                 .gap_2()
-                .child(view_button.flex_1())
                 .child(status_button.flex_1())
+                .child(view_button.flex_1())
+                .child(open_folder_button.flex_1())
             )
     }
 
@@ -186,7 +238,7 @@ impl TableDelegate for ServerList {
 
     fn column(&self, col_ix: usize, _cx: &App) -> Column {
         match col_ix {
-            0 => Column::new("controls", "").width(150.).fixed_left().movable(false).resizable(false),
+            0 => Column::new("controls", "").width(250.).resizable(true).movable(false),
             1 => Column::new("name", "Name").width(150.).fixed_left().sortable().resizable(true),
             2 => Column::new("software", "Software").width(100.).fixed_left().resizable(true),
             3 => Column::new("version", "Version").width(120.).fixed_left().sortable().resizable(true),
@@ -243,7 +295,6 @@ impl TableDelegate for ServerList {
                 let view_button = Button::new(format!("view_server_{}", item.name))
                     .info()
                     .small()
-                    .icon(PandoraIcon::Eye)
                     .label(ts!("instance.view"))
                     .on_click({
                         let name = item.name.clone();
@@ -257,10 +308,22 @@ impl TableDelegate for ServerList {
                         }
                     });
 
+                let open_folder_button = Button::new(format!("open_folder_{}", item.name))
+                    .info()
+                    .small()
+                    .icon(PandoraIcon::Folder)
+                    .on_click({
+                        let path = item.path.clone();
+                        move |_, window, cx| {
+                            crate::open_folder(&path, window, cx);
+                        }
+                    });
+
                 h_flex()
                     .gap_2()
-                    .child(view_button)
-                    .child(status_button)
+                    .child(status_button.small())
+                    .child(view_button.small())
+                    .child(open_folder_button.small())
                     .into_any_element()
             }
             1 => div().child(item.name.clone()).into_any_element(),

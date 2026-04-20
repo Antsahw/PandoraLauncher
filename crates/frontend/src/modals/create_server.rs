@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use bridge::{handle::BackendHandle, message::{EmbeddedOrRaw, MessageToBackend}};
+use bridge::{handle::BackendHandle, message::{EmbeddedOrRaw, MessageToBackend}, modal_action::ModalAction};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Selectable, WindowExt, alert::Alert, button::{Button, ButtonGroup, ButtonVariants}, checkbox::Checkbox, dialog::Dialog, h_flex, input::{Input, InputEvent, InputState}, select::{Select, SelectState}, skeleton::Skeleton, v_flex
+    ActiveTheme, Selectable, WindowExt, alert::Alert, button::Button, checkbox::Checkbox, dialog::Dialog, h_flex, input::{Input, InputEvent, InputState}, select::{Select, SelectState}, skeleton::Skeleton, v_flex
 };
 use schema::version_manifest::{MinecraftVersionManifest, MinecraftVersionType};
 
@@ -11,6 +11,7 @@ use crate::{entity::{metadata::{AsMetadataResult, FrontendMetadata, FrontendMeta
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ServerLoader {
+    Vanilla,
     Paper,
     Purpur,
     Fabric,
@@ -32,9 +33,13 @@ struct CreateServerModalState {
     original_fallback_name: SharedString,
     unique_fallback_name: SharedString,
     icon: Option<EmbeddedOrRaw>,
+    available_versions_for_software: Vec<String>,
+    loading_software_versions: bool,
+    server_software_versions_metadata: Option<Entity<FrontendMetadataState>>,
     _versions_updated_subscription: Subscription,
     _name_input_subscription: Subscription,
     _version_selected_subscription: Subscription,
+    _software_versions_subscription: Option<Subscription>,
 }
 
 impl CreateServerModalState {
@@ -81,7 +86,7 @@ impl CreateServerModalState {
             backend_handle,
             minecraft_version_dropdown,
             name_input_state,
-            selected_loader: ServerLoader::Paper,
+            selected_loader: ServerLoader::Vanilla,
             loaded_versions: false,
             error_loading_versions: None,
             name_invalid: false,
@@ -89,15 +94,20 @@ impl CreateServerModalState {
             original_fallback_name: Default::default(),
             unique_fallback_name: Default::default(),
             icon: None,
+            available_versions_for_software: Vec::new(),
+            loading_software_versions: false,
+            server_software_versions_metadata: None,
             _versions_updated_subscription,
             _name_input_subscription,
             _version_selected_subscription,
+            _software_versions_subscription: None,
         };
 
         this.reload_version_dropdown(window, cx);
 
         this
     }
+
 
     pub fn update_fallback_name(&mut self, window: &mut Window, cx: &mut App) {
         let selected = self.minecraft_version_dropdown
@@ -130,39 +140,49 @@ impl CreateServerModalState {
     }
 
     pub fn reload_version_dropdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Get result and manifest data first, outside the closure
+        let result: FrontendMetadataResult<MinecraftVersionManifest> = self.versions.read(cx).result();
+        let (versions, latest) = match result {
+            FrontendMetadataResult::Loading => {
+                self.loaded_versions = false;
+                self.error_loading_versions = None;
+                (Vec::new(), None)
+            },
+            FrontendMetadataResult::Error(error) => {
+                self.loaded_versions = false;
+                self.error_loading_versions = Some(error);
+                (Vec::new(), None)
+            },
+            FrontendMetadataResult::Loaded(manifest) => {
+                self.loaded_versions = true;
+                self.error_loading_versions = None;
+
+                let show_snapshots = InterfaceConfig::get(cx).show_snapshots_in_create_instance;
+                let mut versions: Vec<SharedString> = if show_snapshots {
+                    manifest.versions.iter().map(|v| SharedString::from(v.id.as_str())).collect()
+                } else {
+                    manifest
+                        .versions
+                        .iter()
+                        .filter(|v| !matches!(v.r#type, MinecraftVersionType::Snapshot))
+                        .map(|v| SharedString::from(v.id.as_str()))
+                        .collect()
+                };
+
+                // Filter by available versions for the current software if we have them
+                if !self.available_versions_for_software.is_empty() {
+                    versions.retain(|v| {
+                        self.available_versions_for_software.iter()
+                            .any(|av| av == v.as_str())
+                    });
+                }
+
+                (versions, Some(SharedString::from(manifest.latest.release.as_str())))
+            },
+        };
+
+        // Now update the dropdown with the filtered versions
         cx.update_entity(&self.minecraft_version_dropdown, |dropdown, cx| {
-            let result: FrontendMetadataResult<MinecraftVersionManifest> = self.versions.read(cx).result();
-            let (versions, latest) = match result {
-                FrontendMetadataResult::Loading => {
-                    self.loaded_versions = false;
-                    self.error_loading_versions = None;
-                    (Vec::new(), None)
-                },
-                FrontendMetadataResult::Error(error) => {
-                    self.loaded_versions = false;
-                    self.error_loading_versions = Some(error);
-                    (Vec::new(), None)
-                },
-                FrontendMetadataResult::Loaded(manifest) => {
-                    self.loaded_versions = true;
-                    self.error_loading_versions = None;
-
-                    let show_snapshots = InterfaceConfig::get(cx).show_snapshots_in_create_instance;
-                    let versions: Vec<SharedString> = if show_snapshots {
-                        manifest.versions.iter().map(|v| SharedString::from(v.id.as_str())).collect()
-                    } else {
-                        manifest
-                            .versions
-                            .iter()
-                            .filter(|v| !matches!(v.r#type, MinecraftVersionType::Snapshot))
-                            .map(|v| SharedString::from(v.id.as_str()))
-                            .collect()
-                    };
-
-                    (versions, Some(SharedString::from(manifest.latest.release.as_str())))
-                },
-            };
-
             let mut to_select = None;
 
             if let Some(last_selected) = dropdown.selected_value().cloned()
@@ -203,7 +223,61 @@ impl CreateServerModalState {
         }
     }
 
+    pub fn request_software_versions(&mut self, software: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.loading_software_versions = true;
+        let software_str = software.to_string();
+        
+        // Request available versions from the backend
+        let metadata_entity = FrontendMetadata::request(
+            &self.metadata,
+            bridge::meta::MetadataRequest::ServerSoftwareVersions(software_str.clone()),
+            cx
+        );
+        
+        self.server_software_versions_metadata = Some(metadata_entity.clone());
+        
+        // Set up subscription to handle response when it arrives
+        let subscription = cx.observe_in(&metadata_entity, window, |this, _, window, cx| {
+            if let Some(ref software_meta) = this.server_software_versions_metadata {
+                let metadata_result: FrontendMetadataResult<Arc<schema::server_software_versions::ServerSoftwareVersions>> = 
+                    software_meta.read(cx).result();
+                
+                match metadata_result {
+                    FrontendMetadataResult::Loaded(software_versions) => {
+                        this.available_versions_for_software = software_versions.versions.clone();
+                        this.loading_software_versions = false;
+                        this.reload_version_dropdown(window, cx);
+                    },
+                    FrontendMetadataResult::Error(_err) => {
+                        this.available_versions_for_software.clear();
+                        this.loading_software_versions = false;
+                    },
+                    FrontendMetadataResult::Loading => {
+                        // Still loading
+                    },
+                }
+            }
+        });
+        
+        self._software_versions_subscription = Some(subscription);
+    }
+
     pub fn render(&mut self, modal: Dialog, _window: &mut Window, cx: &mut Context<Self>) -> Dialog {
+        // Check if we have a pending software versions request to process
+        if let Some(ref software_meta) = self.server_software_versions_metadata {
+            let metadata_result: FrontendMetadataResult<Arc<schema::server_software_versions::ServerSoftwareVersions>> = 
+                software_meta.read(cx).result();
+            
+            if let FrontendMetadataResult::Loaded(software_versions) = metadata_result {
+                if self.available_versions_for_software.is_empty() || self.available_versions_for_software != software_versions.versions {
+                    self.available_versions_for_software = software_versions.versions.clone();
+                    self.loading_software_versions = false;
+                    // Re-apply filtering to show only available versions
+                    self.reload_version_dropdown(_window, cx);
+                }
+            }
+        }
+
         if let Some(error) = self.error_loading_versions.clone() {
             let error_widget = Alert::new("error", format!("{}", error))
                 .icon(PandoraIcon::CircleX)
@@ -212,7 +286,6 @@ impl CreateServerModalState {
             let metadata = self.metadata.clone();
             let reload_button =
                 Button::new("reload-versions")
-                    .primary()
                     .label(ts!("instance.versions_loading.reload"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.error_loading_versions = None;
@@ -246,44 +319,77 @@ impl CreateServerModalState {
                     this.reload_version_dropdown(window, cx);
                 }))
                 .into_any_element();
-            loader_button_group = ButtonGroup::new("server_loader")
-                .outline()
-                .h_full()
+            loader_button_group = v_flex()
+                .gap_2()
                 .child(
-                    Button::new("loader-paper")
-                        .label("Paper")
-                        .selected(self.selected_loader == ServerLoader::Paper),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("loader-vanilla")
+                                .label("Vanilla")
+                                .selected(self.selected_loader == ServerLoader::Vanilla)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.selected_loader = ServerLoader::Vanilla;
+                                    this.request_software_versions("Vanilla", window, cx);
+                                }))
+                                .flex_1()
+                        )
+                        .child(
+                            Button::new("loader-paper")
+                                .label("Paper")
+                                .selected(self.selected_loader == ServerLoader::Paper)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.selected_loader = ServerLoader::Paper;
+                                    this.request_software_versions("Paper", window, cx);
+                                }))
+                                .flex_1()
+                        )
+                        .child(
+                            Button::new("loader-purpur")
+                                .label("Purpur")
+                                .selected(self.selected_loader == ServerLoader::Purpur)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.selected_loader = ServerLoader::Purpur;
+                                    this.request_software_versions("Purpur", window, cx);
+                                }))
+                                .flex_1()
+                        )
+                        .child(
+                            Button::new("loader-fabric")
+                                .label("Fabric")
+                                .selected(self.selected_loader == ServerLoader::Fabric)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.selected_loader = ServerLoader::Fabric;
+                                    this.request_software_versions("Fabric", window, cx);
+                                }))
+                                .flex_1()
+                        )
                 )
                 .child(
-                    Button::new("loader-purpur")
-                        .label("Purpur")
-                        .selected(self.selected_loader == ServerLoader::Purpur),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("loader-forge")
+                                .label("Forge")
+                                .selected(self.selected_loader == ServerLoader::Forge)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.selected_loader = ServerLoader::Forge;
+                                    this.request_software_versions("Forge", window, cx);
+                                }))
+                                .flex_1()
+                        )
+                        .child(
+                            Button::new("loader-neoforge")
+                                .label("NeoForge")
+                                .selected(self.selected_loader == ServerLoader::NeoForge)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.selected_loader = ServerLoader::NeoForge;
+                                    this.request_software_versions("NeoForge", window, cx);
+                                }))
+                                .flex_1()
+                        )
+
                 )
-                .child(
-                    Button::new("loader-fabric")
-                        .label("Fabric")
-                        .selected(self.selected_loader == ServerLoader::Fabric),
-                )
-                .child(
-                    Button::new("loader-forge")
-                        .label("Forge")
-                        .selected(self.selected_loader == ServerLoader::Forge),
-                )
-                .child(
-                    Button::new("loader-neoforge")
-                        .label("NeoForge")
-                        .selected(self.selected_loader == ServerLoader::NeoForge),
-                )
-                .on_click(cx.listener(move |this, selected: &Vec<usize>, _, _| {
-                    match selected.first() {
-                        Some(0) => this.selected_loader = ServerLoader::Paper,
-                        Some(1) => this.selected_loader = ServerLoader::Purpur,
-                        Some(2) => this.selected_loader = ServerLoader::Fabric,
-                        Some(3) => this.selected_loader = ServerLoader::Forge,
-                        Some(4) => this.selected_loader = ServerLoader::NeoForge,
-                        _ => {},
-                    };
-                }))
                 .into_any_element();
         };
 
@@ -294,7 +400,10 @@ impl CreateServerModalState {
                 Input::new(&self.name_input_state).when(self.name_invalid, |this| this.border_color(cx.theme().danger)),
             ))
             .child(crate::labelled(ts!("instance.version"), v_flex().gap_2().child(version_dropdown).child(show_snapshots_button)))
-            .child(crate::labelled("Server Software", loader_button_group))
+            .child(crate::labelled("Server Software", v_flex().gap_2()
+                .child(loader_button_group)
+                .child(div().text_xs().text_color(gpui::rgb(0x888888)).child("Note: Some versions may not be available for all server software types."))
+            ))
             .child(h_flex().child(Button::new("icon").icon(PandoraIcon::Plus).label(ts!("instance.select_icon")).on_click({
                 let entity = cx.entity();
                 move |_, window, cx| {
@@ -333,6 +442,7 @@ impl CreateServerModalState {
                             }
 
                             let server_software = match this.selected_loader {
+                                ServerLoader::Vanilla => "Vanilla",
                                 ServerLoader::Paper => "Paper",
                                 ServerLoader::Purpur => "Purpur",
                                 ServerLoader::Fabric => "Fabric",
@@ -340,12 +450,17 @@ impl CreateServerModalState {
                                 ServerLoader::NeoForge => "NeoForge",
                             };
 
+                            let modal_action = ModalAction::default();
                             this.backend_handle.send(MessageToBackend::CreateServer {
                                 name: name.as_str().into(),
                                 version: selected_version.as_str().into(),
                                 server_software: server_software.into(),
                                 icon: this.icon.clone(),
+                                modal_action: modal_action.clone(),
                             });
+                            
+                            // Show progress modal for server installation
+                            crate::modals::generic::show_notification(window, cx, ts!("server.creating"), modal_action);
                             window.close_dialog(cx);
                         })))
             )

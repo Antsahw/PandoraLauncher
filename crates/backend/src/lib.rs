@@ -19,6 +19,8 @@ mod directories;
 mod install_content;
 mod instance;
 mod java_manifest;
+mod java_manager;
+mod java_runtime;
 mod launch;
 mod launch_wrapper;
 mod launcher_import;

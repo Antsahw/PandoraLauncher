@@ -4,7 +4,7 @@ use std::{
 
 use schema::{
     backend_config::{BackendConfig, ProxyConfig}, instance::{
-        InstanceConfiguration, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration,
+        InstanceConfiguration, InstanceJavaRuntimeConfiguration, InstanceJvmBinaryConfiguration, InstanceJvmFlagsConfiguration,
         InstanceLinuxWrapperConfiguration, InstanceMemoryConfiguration, InstanceSystemLibrariesConfiguration, InstanceWrapperCommandConfiguration,
     }, loader::Loader, minecraft_profile::{MinecraftProfileCape, SkinVariant}, pandora_update::UpdatePrompt
 };
@@ -41,6 +41,7 @@ pub enum MessageToBackend {
         version: Ustr,
         server_software: Ustr,
         icon: Option<EmbeddedOrRaw>,
+        modal_action: ModalAction,
     },
     StartServer {
         name: Ustr,
@@ -59,6 +60,19 @@ pub enum MessageToBackend {
     SendServerCommand {
         name: Ustr,
         command: Ustr,
+    },
+    ReadServerFile {
+        name: Ustr,
+        filename: Ustr,
+    },
+    WriteServerFile {
+        name: Ustr,
+        filename: Ustr,
+        content: Arc<str>,
+    },
+    SetServerJavaRuntime {
+        name: Ustr,
+        java_runtime: Ustr,
     },
     DeleteInstance {
         id: InstanceID,
@@ -102,6 +116,10 @@ pub enum MessageToBackend {
     SetInstanceJvmBinary {
         id: InstanceID,
         jvm_binary: InstanceJvmBinaryConfiguration,
+    },
+    SetInstanceJavaRuntime {
+        id: InstanceID,
+        java_runtime: InstanceJavaRuntimeConfiguration,
     },
     SetInstanceLinuxWrapper {
         id: InstanceID,
@@ -174,6 +192,10 @@ pub enum MessageToBackend {
     },
     GetLogFiles {
         instance: InstanceID,
+        channel: tokio::sync::oneshot::Sender<LogFiles>,
+    },
+    GetServerLogFiles {
+        name: Ustr,
         channel: tokio::sync::oneshot::Sender<LogFiles>,
     },
     GetImportFromOtherLauncherPaths {
@@ -304,6 +326,18 @@ pub enum MessageToFrontend {
         id: InstanceID,
         resource_packs: Arc<[InstanceContentSummary]>,
     },
+    ServerAdded {
+        name: Ustr,
+        software: Ustr,
+        version: Ustr,
+        path: Arc<Path>,
+    },
+    ServerUpdated {
+        name: Ustr,
+        software: Ustr,
+        version: Ustr,
+        path: Arc<Path>,
+    },
     CreateGameOutputWindow {
         id: usize,
         name: String,
@@ -318,6 +352,10 @@ pub enum MessageToFrontend {
     AddNotification {
         notification_type: BridgeNotificationType,
         message: Arc<str>,
+    },
+    ServerFileContent {
+        filename: Ustr,
+        content: Arc<str>,
     },
     AccountsUpdated {
         accounts: Arc<[Account]>,

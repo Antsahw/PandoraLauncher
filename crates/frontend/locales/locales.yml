@@ -418,6 +418,8 @@ instance:
     en: Override JVM Binary
   select_jvm_binary:
     en: Select JVM Binary
+  java_runtime:
+    en: Use Java Runtime
   glfw_lib:
     en: Use System GLFW
   select_glfw_lib:

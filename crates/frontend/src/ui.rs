@@ -19,7 +19,7 @@ use crate::{
 
 pub struct LauncherUI {
     data: DataEntities,
-    page: LauncherPage,
+    pub page: LauncherPage,
     pub update: Option<UpdatePrompt>,
     sidebar_state: ResizePanelState,
     recent_instances: heapless::Vec<(InstanceID, SharedString), 3>,
@@ -395,23 +395,6 @@ impl Render for LauncherUI {
         let _ = groups.push(content_group);
         let _ = groups.push(files_group);
 
-        if !self.recent_instances.is_empty() {
-            let mut recent_instances_group = MenuGroup::new(ts!("instance.recent"));
-
-            for (_, name) in &self.recent_instances {
-                let name = name.clone();
-                let active = page_type == PageType::InstancePage { name: name.clone() };
-                let item = MenuGroupItem::new(name.clone())
-                    .active(active)
-                    .on_click(cx.listener(move |launcher, _, window, cx| {
-                        launcher.switch_page(PageType::InstancePage { name: name.clone() }, &[PageType::Instances], window, cx);
-                    }));
-                recent_instances_group = recent_instances_group.child(item);
-            }
-
-            let _ = groups.push(recent_instances_group);
-        }
-
         let accounts = self.data.accounts.read(cx);
         let (account_head, account_name) = if let Some(account) = &accounts.selected_account {
             let account_name = SharedString::new(account.username.clone());
@@ -593,23 +576,6 @@ impl Render for LauncherUI {
                     window.open_sheet_at(gpui_component::Placement::Left, cx, build);
                 }
             });
-        let bug_report_button = div()
-            .id("bug-report-button")
-            .p_2()
-            .rounded(cx.theme().radius)
-            .hover(|this| {
-                this.bg(cx.theme().sidebar_accent)
-                    .text_color(cx.theme().sidebar_accent_foreground)
-            })
-            .child(PandoraIcon::Bug)
-            .tooltip(move |window, cx| {
-                Tooltip::new("Report a bug").build(window, cx)
-            })
-            .on_click({
-                move |_, window, cx| {
-                    open_bug_report_url(window, cx);
-                }
-            });
 
         let header = h_flex()
             .when_else(cfg!(target_os = "macos"), |this| this.pt(px(9.0)), |this| this.pt(px(14.0)))
@@ -621,7 +587,7 @@ impl Render for LauncherUI {
             .text_size(rems(0.9375))
             .child(Icon::new(PandoraIcon::Pandora).size_8().min_w_8().min_h_8())
             .child(ts!("common.app_name"));
-        let footer_buttons = h_flex().child(settings_button).child(bug_report_button);
+        let footer_buttons = h_flex().child(settings_button);
         let footer = v_flex().pb_2().px_2().items_center().min_w_full().max_w_full().w_full().child(footer_buttons).child(account_button);
         let sidebar = v_flex()
             .size_full()

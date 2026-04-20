@@ -17,6 +17,7 @@ pub struct LauncherDirectories {
     pub libraries_dir: Arc<Path>,
     pub log_configs_dir: Arc<Path>,
     pub runtime_base_dir: Arc<Path>,
+    pub java_runtimes_dir: Arc<Path>,
 
     pub content_library_dir: Arc<Path>,
     pub content_meta_dir: Arc<Path>,
@@ -49,6 +50,7 @@ impl LauncherDirectories {
         let log_configs_dir = launcher_dir.join("logconfigs");
 
         let runtime_base_dir = launcher_dir.join("runtime");
+        let java_runtimes_dir = launcher_dir.join("java_runtimes");
 
         let content_library_dir = launcher_dir.join("contentlibrary");
         let content_meta_dir = launcher_dir.join("contentmeta");
@@ -76,6 +78,7 @@ impl LauncherDirectories {
             libraries_dir: libraries_dir.into(),
             log_configs_dir: log_configs_dir.into(),
             runtime_base_dir: runtime_base_dir.into(),
+            java_runtimes_dir: java_runtimes_dir.into(),
 
             content_library_dir: content_library_dir.into(),
             content_meta_dir: content_meta_dir.into(),

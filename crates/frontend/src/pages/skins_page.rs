@@ -20,6 +20,7 @@ pub struct SkinsPage {
     pending_login: Option<ModalAction>,
     applying_to_account: Option<Uuid>,
     request_account_skin: Option<Task<()>>,
+    requested_skins: std::collections::HashSet<Uuid>,
     selected_skin: Arc<[u8]>,
     selected_cape: Option<(Uuid, Arc<str>)>,
     active_cape: Option<(Uuid, Arc<str>)>,
@@ -41,6 +42,7 @@ impl SkinsPage {
             pending_login: None,
             applying_to_account: None,
             request_account_skin: None,
+            requested_skins: std::collections::HashSet::new(),
             selected_skin: DEFAULT_SKIN.clone(),
             selected_cape: None,
             active_cape: None,
@@ -190,6 +192,10 @@ impl Render for SkinsPage {
         if let Some(account) = &self.data.accounts.read(cx).selected_account {
             let uuid = account.uuid;
             let username = account.username.clone();
+            
+            // Clear requested skins if we switched accounts
+            self.requested_skins.retain(|&id| id == uuid);
+            
             if account.offline {
                 controls = ts!("skins.no_offline").into_any_element();
             } else if self.applying_to_account == Some(uuid) {
@@ -213,6 +219,10 @@ impl Render for SkinsPage {
                 match self.account_skins.get(&uuid) {
                     Some(AccountSkinResult::Success { skin }) => {
                         active_skin = skin.clone();
+                        // Update selected_skin with the cached account skin if available
+                        if let Some(skin_data) = skin {
+                            self.selected_skin = skin_data.clone();
+                        }
                         let can_apply_changes = if let Some(skin) = skin {
                             !Arc::ptr_eq(skin, &self.selected_skin) ||
                                 self.active_cape != self.selected_cape
@@ -297,11 +307,21 @@ impl Render for SkinsPage {
                         controls = ts!("skins.unable_to_load", username = username).into_any_element();
                     },
                     None => {
-                        if self.can_request_account_skin() {
+                        if !self.requested_skins.contains(&uuid) && self.can_request_account_skin() {
+                            self.requested_skins.insert(uuid);
                             self.request_account_skin(uuid, cx);
                         }
-                        controls = ts!("skins.loading", username = username).into_any_element();
+                        controls = gpui::Empty.into_any_element();
                     }
+                }
+            }
+
+            // Sync the player model widget with active skin if still showing default
+            if let Some(skin) = &active_skin {
+                if !Arc::ptr_eq(&self.selected_skin, &DEFAULT_SKIN) {
+                    self.player_model_widget.update(cx, |widget, cx| {
+                        widget.set_skin(cx, self.selected_skin.clone());
+                    });
                 }
             }
 
@@ -375,6 +395,7 @@ impl Render for SkinsPage {
                 }
             }
         } else {
+            self.requested_skins.clear();
             controls = "Select an account to view/edit skins".into_any_element();
         }
 

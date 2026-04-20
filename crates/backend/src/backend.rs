@@ -17,7 +17,7 @@ use indexmap::IndexSet;
 use parking_lot::RwLock;
 use reqwest::{StatusCode, redirect::Policy};
 use rustc_hash::FxHashMap;
-use schema::{auxiliary::AuxiliaryContentMeta, backend_config::{BackendConfig, ProxyConfig, SyncTargets}, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeGetFilesRequest}, forge::VersionFragment, instance::InstanceConfiguration, loader::Loader, maven::MavenMetadataXml, minecraft_profile::MinecraftProfileResponse, modrinth::ModrinthSideRequirement};
+use schema::{auxiliary::AuxiliaryContentMeta, backend_config::{BackendConfig, ProxyConfig, SyncTargets}, content::ContentSource, curseforge::{CachedCurseforgeFileInfo, CurseforgeGetFilesRequest}, instance::InstanceConfiguration, loader::Loader, minecraft_profile::MinecraftProfileResponse, modrinth::ModrinthSideRequirement};
 use sha1::{Digest, Sha1};
 use strum::IntoEnumIterator;
 use tokio::sync::{OnceCell, Semaphore, mpsc::Receiver};
@@ -74,6 +74,15 @@ pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHa
     let directories = Arc::new(LauncherDirectories::new(launcher_dir));
 
     let mut config: Persistent<BackendConfig> = Persistent::load(directories.config_json.clone());
+    
+    // Discover any previously downloaded Java runtimes and populate config
+    config.modify(|cfg| {
+        crate::java_manager::discover_downloaded_runtimes(
+            &directories.runtime_base_dir,
+            &mut cfg.java_runtimes,
+        );
+    });
+
     let proxy_config = config.get().proxy.clone();
     let proxy_password: Option<String> = if proxy_config.enabled && proxy_config.auth_enabled {
         runtime.block_on(async {
@@ -129,6 +138,8 @@ pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHa
     // Load accounts
     let account_info = Persistent::load(directories.accounts_json.clone());
 
+    let config = Arc::new(RwLock::new(config));
+
     let state = BackendState {
         self_handle,
         send: send.clone(),
@@ -141,12 +152,13 @@ pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHa
         launcher: Launcher::new(meta, directories, send),
         mod_metadata_manager: Arc::new(mod_metadata_manager),
         account_info: Arc::new(RwLock::new(account_info)),
-        config: Arc::new(RwLock::new(config)),
+        config,
         secret_storage: Arc::new(OnceCell::new()),
         login_semaphore: Arc::new(Semaphore::new(1)),
         cached_minecraft_profiles: Default::default(),
         skin_manager: Default::default(),
         server_processes: Arc::new(RwLock::new(HashMap::new())),
+        server_game_output_ids: Arc::new(RwLock::new(HashMap::new())),
     };
 
     log::debug!("Doing initial backend load");
@@ -205,6 +217,7 @@ pub struct BackendState {
     pub cached_minecraft_profiles: Arc<RwLock<FxHashMap<Uuid, CachedMinecraftProfile>>>,
     pub skin_manager: Arc<RwLock<SkinManager>>,
     pub server_processes: Arc<RwLock<HashMap<String, std::process::Child>>>,
+    pub server_game_output_ids: Arc<RwLock<HashMap<String, usize>>>,
 }
 
 pub struct CachedMinecraftProfile {
@@ -374,7 +387,7 @@ impl BackendState {
                 name: instance.name,
                 icon: instance.icon.clone(),
                 root_path: instance.resolve_real_root_path(),
-                dot_minecraft_folder: instance.dot_minecraft_path.clone(),
+                dot_minecraft_folder: instance.resolve_real_root_path().join(".minecraft").into(),
                 configuration: instance.configuration.get().clone(),
                 worlds_state: instance.worlds_state.clone(),
                 servers_state: instance.servers_state.clone(),
@@ -1076,7 +1089,129 @@ impl BackendState {
         Some(instance_dir.clone())
     }
 
-    pub async fn create_server(&self, name: &str, version: &str, server_software: &str, icon: Option<EmbeddedOrRaw>) -> Option<PathBuf> {
+    pub async fn validate_server_version(&self, version: &str, server_software: &str) -> bool {
+        let client = reqwest::Client::new();
+        
+        match server_software {
+            "Vanilla" => {
+                // Vanilla uses the same Minecraft version manifest we already have
+                // Just check if it's a valid Minecraft version
+                !version.is_empty()
+            },
+            "Paper" => {
+                let api_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}", version);
+                if let Ok(response) = client.get(&api_url).send().await {
+                    if response.status().is_success() {
+                        if let Ok(version_data) = response.json::<serde_json::Value>().await {
+                            return version_data["builds"].as_array().map(|builds| !builds.is_empty()).unwrap_or(false);
+                        }
+                    }
+                }
+                false
+            },
+            "Purpur" => {
+                // Purpur uses the same Paper API as fallback, so just check if Paper version exists
+                // Purpur either has its own build or falls back to Paper
+                let paper_api_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}", version);
+                if let Ok(response) = client.get(&paper_api_url).send().await {
+                    if response.status().is_success() {
+                        if let Ok(version_data) = response.json::<serde_json::Value>().await {
+                            return version_data["builds"].as_array().map(|builds| !builds.is_empty()).unwrap_or(false);
+                        }
+                    }
+                }
+                false
+            },
+            "Fabric" => {
+                let loader_url = format!("https://meta.fabricmc.net/v2/versions/loader/{}", version);
+                if let Ok(response) = client.get(&loader_url).send().await {
+                    if response.status().is_success() {
+                        if let Ok(loader_data) = response.json::<serde_json::Value>().await {
+                            return loader_data.as_array().map(|a| !a.is_empty()).unwrap_or(false);
+                        }
+                    }
+                }
+                false
+            },
+            "Forge" | "NeoForge" => {
+                // For Forge/NeoForge, we'll accept any version as they have complex version schemes
+                // The actual validation happens during download
+                true
+            },
+            _ => false,
+        }
+    }
+
+    pub async fn get_available_server_versions(&self, server_software: &str) -> Vec<String> {
+        let client = reqwest::Client::new();
+        
+        match server_software {
+            "Vanilla" => {
+                // Return Minecraft versions from the manifest
+                if let Ok(response) = client.get("https://launchermeta.mojang.com/mc/game/version_manifest.json").send().await {
+                    if let Ok(manifest) = response.json::<serde_json::Value>().await {
+                        if let Some(versions) = manifest["versions"].as_array() {
+                            return versions.iter()
+                                .filter_map(|v| v["id"].as_str().map(|s| s.to_string()))
+                                .collect();
+                        }
+                    }
+                }
+                Vec::new()
+            },
+            "Paper" => {
+                if let Ok(response) = client.get("https://api.papermc.io/v2/projects/paper/versions").send().await {
+                    if let Ok(data) = response.json::<serde_json::Value>().await {
+                        if let Some(versions) = data["versions"].as_array() {
+                            return versions.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect();
+                        }
+                    }
+                }
+                Vec::new()
+            },
+            "Purpur" => {
+                // Purpur supports same versions as Paper
+                if let Ok(response) = client.get("https://api.papermc.io/v2/projects/paper/versions").send().await {
+                    if let Ok(data) = response.json::<serde_json::Value>().await {
+                        if let Some(versions) = data["versions"].as_array() {
+                            return versions.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect();
+                        }
+                    }
+                }
+                Vec::new()
+            },
+            "Fabric" => {
+                if let Ok(response) = client.get("https://meta.fabricmc.net/v2/versions/game").send().await {
+                    if let Ok(versions) = response.json::<Vec<serde_json::Value>>().await {
+                        return versions.iter()
+                            .filter_map(|v| v["version"].as_str().map(|s| s.to_string()))
+                            .collect();
+                    }
+                }
+                Vec::new()
+            },
+            "Forge" | "NeoForge" => {
+                // Forge/NeoForge support all Minecraft versions, so return Minecraft versions
+                if let Ok(response) = client.get("https://launchermeta.mojang.com/mc/game/version_manifest.json").send().await {
+                    if let Ok(manifest) = response.json::<serde_json::Value>().await {
+                        if let Some(versions) = manifest["versions"].as_array() {
+                            return versions.iter()
+                                .filter_map(|v| v["id"].as_str().map(|s| s.to_string()))
+                                .collect();
+                        }
+                    }
+                }
+                Vec::new()
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    pub async fn create_server(&self, name: &str, version: &str, server_software: &str, icon: Option<EmbeddedOrRaw>, modal_action: &bridge::modal_action::ModalAction) -> Option<PathBuf> {
         log::info!("Creating server {name} with software {server_software} version {version}");
         if !crate::is_single_component_path_str(&name) {
             self.send.send_warning(format!("Unable to create server, name must not be a path: {}", name));
@@ -1088,6 +1223,15 @@ impl BackendState {
         }
         if self.instance_state.read().instances.iter().any(|i| i.name == name) {
             self.send.send_warning("Unable to create server, name is already used".to_string());
+            return None;
+        }
+
+        // Validate that the server version is available before creating the folder
+        if !self.validate_server_version(version, server_software).await {
+            self.send.send_error(format!(
+                "Unable to create server: {} version {} is not available. Please check the version number and try again.",
+                server_software, version
+            ));
             return None;
         }
 
@@ -1162,11 +1306,13 @@ impl BackendState {
         // Spawn background task to download server JAR
         let sender = self.send.clone();
         let server_dir_clone = server_dir.clone();
-        let version_str = version.to_string();
-        let software_str = server_software.to_string();
+        let name_clone = name.to_string();
+        let version_clone = version.to_string();
+        let software_clone = server_software.to_string();
+        let modal_action_clone = modal_action.clone();
         
         tokio::spawn(async move {
-            let _ = download_server_jar_background(&sender, &server_dir_clone, &software_str, &version_str).await;
+            let _ = download_server_jar_background(&sender, &server_dir_clone, software_clone.as_str(), version_clone.as_str(), name_clone.as_str(), &modal_action_clone).await;
         });
         
         Some(server_dir.clone())
@@ -1363,7 +1509,7 @@ impl BackendStateFileWatching {
     }
 }
 
-async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle, server_dir: &Path, software: &str, version: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle, server_dir: &Path, software: &str, version: &str, name: &str, modal_action: &bridge::modal_action::ModalAction) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let version = version.to_string();
     let software = software.to_string();
@@ -1373,9 +1519,15 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
     let installer_base = launcher_parent.join("server installers").join(&software).join(&version);
     tokio::fs::create_dir_all(&installer_base).await.ok();
     
+    // Create one main tracker for the server installation process
+    let tracker = ProgressTracker::new(Arc::from(format!("Installing {} {} Server", software, version).as_str()), sender.clone());
+    modal_action.trackers.push(tracker.clone());
+    tracker.notify();
+    
     match software.as_str() {
         "Paper" => {
-            sender.send_info(format!("Downloading Paper {} from API...", version));
+            tracker.set_title(Arc::from(format!("Downloading Paper {} from API...", version).as_str()));
+            tracker.notify();
             
             let api_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}", version);
             match client.get(&api_url).send().await {
@@ -1391,47 +1543,79 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                                                 version, latest_build, version, latest_build
                                             );
                                             
-                                            sender.send_info(format!("Downloading Paper JAR (build {})...", latest_build));
+                                            tracker.set_title(Arc::from(format!("Downloading Paper JAR (build {})...", latest_build).as_str()));
+                                            tracker.notify();
                                             
                                             match client.get(&download_url).send().await {
                                                 Ok(jar_response) if jar_response.status().is_success() => {
+                                                    if let Some(content_length) = jar_response.content_length() {
+                                                        tracker.set_total(content_length as usize);
+                                                        tracker.notify();
+                                                    }
+                                                    
                                                     if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                        if jar_bytes.len() > 0 {
+                                                            tracker.set_count(jar_bytes.len());
+                                                            tracker.notify();
+                                                        }
+                                                        
                                                         let jar_path = server_dir.join(format!("paper-{}.jar", version));
-                                                        if let Ok(_) = tokio::fs::write(&jar_path, &jar_bytes).await {
-                                                            sender.send_info(format!("✓ Paper server downloaded successfully"));
+                                                        if let Ok(_) = tokio::fs::write(&jar_path, jar_bytes).await {
+                                                            tracker.set_title(Arc::from("✓ Paper server downloaded successfully"));
+                                                            tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                                            tracker.notify();
                                                         } else {
-                                                            sender.send_error("Failed to write JAR to disk".to_string());
+                                                            tracker.set_title(Arc::from("✗ Failed to write JAR to disk"));
+                                                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                            tracker.notify();
                                                         }
                                                     }
                                                 },
-                                                _ => sender.send_error("Failed to download Paper JAR file".to_string()),
+                                                _ => {
+                                                    tracker.set_title(Arc::from("✗ Failed to download Paper JAR file"));
+                                                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                    tracker.notify();
+                                                }
                                             }
                                         } else {
-                                            sender.send_warning(format!("No valid Paper builds found for version {}", version));
+                                            tracker.set_title(Arc::from(format!("✗ No valid Paper builds found for version {}", version).as_str()));
+                                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                                            tracker.notify();
                                         }
                                     } else {
-                                        sender.send_warning(format!("No Paper builds found for version {}", version));
+                                        tracker.set_title(Arc::from(format!("✗ No Paper builds found for version {}", version).as_str()));
+                                        tracker.set_finished(ProgressTrackerFinishType::Error);
+                                        tracker.notify();
                                     }
                                 } else {
-                                    sender.send_warning(format!("Invalid response from Paper API for version {}", version));
+                                    tracker.set_title(Arc::from(format!("✗ Invalid response from Paper API for version {}", version).as_str()));
+                                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                                    tracker.notify();
                                 }
                             }
                         },
                         404 => {
-                            sender.send_warning(format!("Paper version {} not found. Valid versions use format like 1.20.1, 1.20, 1.19.2, etc.", version));
+                            tracker.set_title(Arc::from(format!("✗ Paper version {} not found", version).as_str()));
+                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                            tracker.notify();
                         },
                         status => {
-                            sender.send_warning(format!("Paper API returned status {} for version {}", status, version));
+                            tracker.set_title(Arc::from(format!("✗ Paper API returned status {}", status).as_str()));
+                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                            tracker.notify();
                         }
                     }
                 },
                 Err(e) => {
-                    sender.send_warning(format!("Failed to connect to Paper API: {}. Server created but JAR download failed.", e));
+                    tracker.set_title(Arc::from(format!("✗ Failed to connect to Paper API: {}", e).as_str()));
+                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                    tracker.notify();
                 }
             }
         },
         "Purpur" => {
-            sender.send_info(format!("Downloading Purpur {} from API...", version));
+            tracker.set_title(Arc::from(format!("Downloading Purpur {} from API...", version).as_str()));
+            tracker.notify();
             
             let api_url = format!("https://api.purpurmc.io/v2/purpur/{}", version);
             match client.get(&api_url).send().await {
@@ -1443,23 +1627,43 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                                 version, build, version, build
                             );
                             
-                            sender.send_info(format!("Downloading Purpur JAR (build {})...", build));
+                            tracker.set_title(Arc::from(format!("Downloading Purpur JAR (build {})...", build).as_str()));
+                            tracker.notify();
                             
                             match client.get(&download_url).send().await {
                                 Ok(jar_response) if jar_response.status().is_success() => {
+                                    if let Some(content_length) = jar_response.content_length() {
+                                        tracker.set_total(content_length as usize);
+                                        tracker.notify();
+                                    }
+                                    
                                     if let Ok(jar_bytes) = jar_response.bytes().await {
+                                        if jar_bytes.len() > 0 {
+                                            tracker.set_count(jar_bytes.len());
+                                            tracker.notify();
+                                        }
+                                        
                                         let jar_path = server_dir.join(format!("purpur-{}.jar", version));
-                                        if let Ok(_) = tokio::fs::write(&jar_path, &jar_bytes).await {
-                                            sender.send_info(format!("✓ Purpur server downloaded successfully"));
+                                        if let Ok(_) = tokio::fs::write(&jar_path, jar_bytes).await {
+                                            tracker.set_title(Arc::from("✓ Purpur server downloaded successfully"));
+                                            tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                            tracker.notify();
                                         } else {
-                                            sender.send_error("Failed to write JAR to disk".to_string());
+                                            tracker.set_title(Arc::from("✗ Failed to write JAR to disk"));
+                                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                                            tracker.notify();
                                         }
                                     }
                                 },
-                                _ => sender.send_error("Failed to download Purpur JAR".to_string()),
+                                _ => {
+                                    tracker.set_title(Arc::from("✗ Failed to download Purpur JAR"));
+                                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                                    tracker.notify();
+                                },
                             }
                         } else {
-                            sender.send_warning(format!("Purpur version {} not found, falling back to Paper", version));
+                            tracker.set_title(Arc::from(format!("⚠ Purpur version {} not found, falling back to Paper...", version).as_str()));
+                            tracker.notify();
                             // Fallback to Paper
                             let api_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}", version);
                             if let Ok(response) = client.get(&api_url).send().await {
@@ -1473,12 +1677,16 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                                                         version, latest_build, version, latest_build
                                                     );
                                                     
+                                                    tracker.set_title(Arc::from(format!("Downloading paper fallback (build {})...", latest_build).as_str()));
+                                                    tracker.notify();
                                                     if let Ok(jar_response) = client.get(&download_url).send().await {
                                                         if jar_response.status().is_success() {
                                                             if let Ok(jar_bytes) = jar_response.bytes().await {
                                                                 let jar_path = server_dir.join(format!("paper-{}.jar", version));
                                                                 let _ = tokio::fs::write(&jar_path, &jar_bytes).await;
-                                                                sender.send_info(format!("✓ Paper fallback downloaded successfully"));
+                                                                tracker.set_title(Arc::from("✓ Paper fallback downloaded successfully"));
+                                                                tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                                                tracker.notify();
                                                             }
                                                         }
                                                     }
@@ -1492,7 +1700,8 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                     }
                 },
                 _ => {
-                    sender.send_warning(format!("Failed to fetch Purpur versions for {}, falling back to Paper", version));
+                    tracker.set_title(Arc::from(format!("⚠ Failed to fetch Purpur versions for {}, falling back to Paper...", version).as_str()));
+                    tracker.notify();
                     // Fallback to Paper
                     let api_url = format!("https://api.papermc.io/v2/projects/paper/versions/{}", version);
                     if let Ok(response) = client.get(&api_url).send().await {
@@ -1506,12 +1715,16 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                                                 version, latest_build, version, latest_build
                                             );
                                             
+                                            tracker.set_title(Arc::from(format!("Downloading paper fallback (build {})...", latest_build).as_str()));
+                                            tracker.notify();
                                             if let Ok(jar_response) = client.get(&download_url).send().await {
                                                 if jar_response.status().is_success() {
                                                     if let Ok(jar_bytes) = jar_response.bytes().await {
                                                         let jar_path = server_dir.join(format!("paper-{}.jar", version));
                                                         let _ = tokio::fs::write(&jar_path, &jar_bytes).await;
-                                                        sender.send_info(format!("✓ Paper fallback downloaded successfully"));
+                                                        tracker.set_title(Arc::from("✓ Paper fallback downloaded successfully"));
+                                                        tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                                        tracker.notify();
                                                     }
                                                 }
                                             }
@@ -1525,60 +1738,185 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
             }
         },
         "Fabric" => {
-            sender.send_info(format!("Downloading Fabric {} server...", version));
+            tracker.set_title(Arc::from(format!("Setting up Fabric {} server...", version).as_str()));
+            tracker.notify();
             
-            match client.get("https://meta.fabricmc.net/v2/versions/loader")
-                .send().await {
+            // Check if version is supported by Fabric
+            let loader_url = format!("https://meta.fabricmc.net/v2/versions/loader/{}", version);
+            match client.get(&loader_url).send().await {
                 Ok(response) if response.status().is_success() => {
                     if let Ok(loader_data) = response.json::<serde_json::Value>().await {
                         if let Some(loaders_array) = loader_data.as_array() {
-                            let mut successful_download = false;
-                            
-                            // Try multiple recent loaders (first 5) for compatibility
-                            for (idx, loader) in loaders_array.iter().enumerate() {
-                                if idx >= 5 { break; } // Try top 5 recent loaders
-                                
-                                if let Some(loader_version) = loader["version"].as_str() {
-                                    if idx > 0 && !successful_download {
-                                        sender.send_info(format!("Trying with Fabric loader {}...", loader_version));
-                                    }
-                                    
-                                    let download_url = format!(
-                                        "https://meta.fabricmc.net/v2/versions/loader/{}/{}/server/jar",
-                                        version, loader_version
-                                    );
-                                    
-                                    match client.get(&download_url).send().await {
-                                        Ok(jar_response) if jar_response.status().is_success() => {
-                                            if let Ok(jar_bytes) = jar_response.bytes().await {
-                                                sender.send_info(format!("Using Fabric loader {}, downloading server JAR...", loader_version));
-                                                let jar_path = server_dir.join(format!("fabric-server-{}.jar", version));
-                                                if let Ok(_) = tokio::fs::write(&jar_path, &jar_bytes).await {
-                                                    sender.send_info(format!("✓ Fabric server downloaded successfully"));
-                                                    successful_download = true;
-                                                    break;
+                            if let Some(_latest_entry) = loaders_array.first() {
+                                // Step 1: Get vanilla minecraft server jar
+                                tracker.set_title(Arc::from("Fetching Minecraft metadata..."));
+                                tracker.notify();
+                                if let Ok(version_response) = client.get("https://launchermeta.mojang.com/mc/game/version_manifest.json").send().await {
+                                    if let Ok(manifest_data) = version_response.json::<serde_json::Value>().await {
+                                        if let Some(versions) = manifest_data["versions"].as_array() {
+                                            if let Some(version_entry) = versions.iter().find(|v| v["id"].as_str().map(|id| id == version).unwrap_or(false)) {
+                                                if let Some(url) = version_entry["url"].as_str() {
+                                                    // Download the version.json
+                                                    match client.get(url).send().await {
+                                                        Ok(version_response) if version_response.status().is_success() => {
+                                                            if let Ok(version_json) = version_response.json::<serde_json::Value>().await {
+                                                                if let Some(download_url) = version_json["downloads"]["server"]["url"].as_str() {
+                                                                    tracker.set_title(Arc::from(format!("Downloading Minecraft {} server JAR...", version).as_str()));
+                                                                    tracker.notify();
+                                                                    match client.get(download_url).send().await {
+                                                                        Ok(jar_response) if jar_response.status().is_success() => {
+                                                                            if let Some(content_length) = jar_response.content_length() {
+                                                                                tracker.set_total(content_length as usize);
+                                                                                tracker.notify();
+                                                                            }
+                                                                            if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                                                if jar_bytes.len() > 0 {
+                                                                                    tracker.set_count(jar_bytes.len());
+                                                                                    tracker.notify();
+                                                                                }
+                                                                                let vanilla_jar_path = server_dir.join("server.jar");
+                                                                                // Step 2: Download Fabric installer
+                                                                                tracker.set_title(Arc::from("Downloading Fabric installer..."));
+                                                                                tracker.notify();
+                                                                                match client.get("https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.1.1/fabric-installer-1.1.1.jar").send().await {
+                                                                                    Ok(installer_response) if installer_response.status().is_success() => {
+                                                                                        if let Some(content_length) = installer_response.content_length() {
+                                                                                            tracker.set_total(content_length as usize);
+                                                                                            tracker.notify();
+                                                                                        }
+                                                                                        if let Ok(installer_bytes) = installer_response.bytes().await {
+                                                                                            if installer_bytes.len() > 0 {
+                                                                                                tracker.set_count(installer_bytes.len());
+                                                                                                tracker.notify();
+                                                                                            }
+                                                                                            let installer_path = server_dir.join("fabric-installer.jar");
+                                                                                            // Write both files
+                                                                                            if let (Ok(_), Ok(_)) = (
+                                                                                                tokio::fs::write(&vanilla_jar_path, &jar_bytes).await,
+                                                                                                tokio::fs::write(&installer_path, &installer_bytes).await
+                                                                                            ) {
+                                                                                                // Step 3: Run Fabric installer
+                                                                                                tracker.set_title(Arc::from("Running Fabric installer..."));
+                                                                                                tracker.notify();
+                                                                                                let output = std::process::Command::new("java")
+                                                                                                    .arg("-jar")
+                                                                                                    .arg(&installer_path)
+                                                                                                    .arg("server")
+                                                                                                    .arg("-dir")
+                                                                                                    .arg(&server_dir)
+                                                                                                    .arg("-mcversion")
+                                                                                                    .arg(&version)
+                                                                                                    .output();
+                                                                                                
+                                                                                                match output {
+                                                                                                    Ok(output) if output.status.success() => {
+                                                                                                        // Clean up installer jar
+                                                                                                        let _ = tokio::fs::remove_file(&installer_path).await;
+                                                                                                        tracker.set_title(Arc::from(format!("✓ Fabric {} server installed successfully", version).as_str()));
+                                                                                                        tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                                                                                        tracker.notify();
+                                                                                                        sender.send(MessageToFrontend::ServerAdded {
+                                                                                                            name: name.into(),
+                                                                                                            software: "Fabric".into(),
+                                                                                                            version: (&version[..]).into(),
+                                                                                                            path: Arc::from(server_dir.to_path_buf()),
+                                                                                                        });
+                                                                                                    },
+                                                                                                    _ => {
+                                                                                                        tracker.set_title(Arc::from("✗ Fabric installer failed. Make sure Java is installed."));
+                                                                                                        tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                                                                        tracker.notify();
+                                                                                                    }
+                                                                                                }
+                                                                                            } else {
+                                                                                                tracker.set_title(Arc::from("✗ Failed to write JAR files to disk"));
+                                                                                                tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                                                                tracker.notify();
+                                                                                            }
+                                                                                        }
+                                                                                    },
+                                                                                    _ => {
+                                                                                        tracker.set_title(Arc::from("✗ Failed to download Fabric installer"));
+                                                                                        tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                                                        tracker.notify();
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        },
+                                                                        _ => {
+                                                                            tracker.set_title(Arc::from(format!("✗ Failed to download Minecraft {} JAR", version).as_str()));
+                                                                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                                            tracker.notify();
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    tracker.set_title(Arc::from("✗ Minecraft server JAR URL not found"));
+                                                                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                                    tracker.notify();
+                                                                }
+                                                            } else {
+                                                                tracker.set_title(Arc::from("✗ Failed to parse version JSON"));
+                                                                tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                                tracker.notify();
+                                                            }
+                                                        },
+                                                        _ => {
+                                                            tracker.set_title(Arc::from(format!("✗ Failed to fetch version JSON for {}", version).as_str()));
+                                                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                            tracker.notify();
+                                                        }
+                                                    }
                                                 } else {
-                                                    sender.send_error("Failed to write JAR to disk".to_string());
+                                                    tracker.set_title(Arc::from("✗ Version URL not found in manifest"));
+                                                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                    tracker.notify();
                                                 }
+                                            } else {
+                                                tracker.set_title(Arc::from(format!("✗ Minecraft version {} not found", version).as_str()));
+                                                tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                tracker.notify();
                                             }
-                                        },
-                                        _ => {}, // Try next loader version
+                                        } else {
+                                            tracker.set_title(Arc::from("✗ No versions in manifest"));
+                                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                                            tracker.notify();
+                                        }
+                                    } else {
+                                        tracker.set_title(Arc::from("✗ Failed to parse version manifest"));
+                                        tracker.set_finished(ProgressTrackerFinishType::Error);
+                                        tracker.notify();
                                     }
+                                } else {
+                                    tracker.set_title(Arc::from("✗ Failed to fetch version manifest"));
+                                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                                    tracker.notify();
                                 }
+                            } else {
+                                tracker.set_title(Arc::from(format!("✗ No compatible Fabric loaders for version {}", version).as_str()));
+                                tracker.set_finished(ProgressTrackerFinishType::Error);
+                                tracker.notify();
                             }
-                            
-                            if !successful_download {
-                                sender.send_error(format!("Could not download Fabric {} with any compatible loader. Visit https://fabricmc.net/use to verify version availability.", version));
-                            }
+                        } else {
+                            tracker.set_title(Arc::from(format!("✗ Invalid response from Fabric metadata server for version {}", version).as_str()));
+                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                            tracker.notify();
                         }
+                    } else {
+                        tracker.set_title(Arc::from(format!("✗ Failed to parse Fabric loader metadata for version {}", version).as_str()));
+                        tracker.set_finished(ProgressTrackerFinishType::Error);
+                        tracker.notify();
                     }
                 },
-                _ => sender.send_warning("Failed to fetch Fabric loader versions. Check your internet connection.".to_string()),
+                Err(_) | Ok(_) => {
+                    tracker.set_title(Arc::from(format!("✗ Failed to fetch Fabric loaders for version {}", version).as_str()));
+                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                    tracker.notify();
+                }
             }
         },
         "Forge" => {
-            sender.send_info("Fetching Forge versions metadata...");
-            
+            tracker.set_title(Arc::from("Fetching Forge versions metadata..."));
+            tracker.notify();
             match client.get("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml").send().await {
                 Ok(response) if response.status().is_success() => {
                     if let Ok(xml_bytes) = response.bytes().await {
@@ -1604,46 +1942,145 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                             }
                             
                             if let Some(forge_version) = matching_version {
-                                sender.send_info(format!("Downloading Forge {} installer...", forge_version));
-                                
-                                let download_url = format!(
-                                    "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}-installer.jar",
-                                    forge_version, forge_version
-                                );
-                                
-                                match client.get(&download_url).send().await {
-                                    Ok(jar_response) if jar_response.status().is_success() => {
-                                        if let Ok(jar_bytes) = jar_response.bytes().await {
-                                            let installer_path = server_dir.join(format!("forge-{}-installer.jar", forge_version));
-                                            if let Ok(_) = tokio::fs::write(&installer_path, &jar_bytes).await {
-                                                sender.send_info(format!("✓ Forge installer downloaded. Now running installer to generate server JAR..."));
-                                                
-                                                // Try to run the installer automatically
-                                                match std::process::Command::new("java")
-                                                    .args(["Xmx1G", "-jar"])
-                                                    .arg(&installer_path)
-                                                    .arg("--installServer")
-                                                    .current_dir(&server_dir)
-                                                    .output()
-                                                {
-                                                    Ok(output) => {
-                                                        if output.status.success() {
-                                                            sender.send_info(format!("✓ Forge server JAR created successfully. Server is ready to launch!"));
-                                                        } else {
-                                                            let _error_msg = String::from_utf8_lossy(&output.stderr);
-                                                            sender.send_warning(format!("Forge installer completed but may need attention. Check console for details. If forge-{}-universal.jar exists, server is ready.", forge_version));
-                                                        }
-                                                    },
-                                                    Err(e) => {
-                                                        sender.send_warning(format!("Could not auto-run Forge installer: {}. Please manually run: java -Xmx1G -jar forge-{}-installer.jar --installServer", e, forge_version));
+                                // Step 1: Download vanilla Minecraft server JAR first
+                                tracker.set_title(Arc::from(format!("Downloading vanilla Minecraft {} server JAR...", version).as_str()));
+                                tracker.notify();
+                                if let Ok(version_response) = client.get("https://launchermeta.mojang.com/mc/game/version_manifest.json").send().await {
+                                    if let Ok(manifest_data) = version_response.json::<serde_json::Value>().await {
+                                        if let Some(versions) = manifest_data["versions"].as_array() {
+                                            if let Some(version_entry) = versions.iter().find(|v| v["id"].as_str().map(|id| id == version).unwrap_or(false)) {
+                                                if let Some(url) = version_entry["url"].as_str() {
+                                                    // Download the version.json
+                                                    match client.get(url).send().await {
+                                                        Ok(version_response) if version_response.status().is_success() => {
+                                                            if let Ok(version_json) = version_response.json::<serde_json::Value>().await {
+                                                                if let Some(download_url) = version_json["downloads"]["server"]["url"].as_str() {
+                                                                    match client.get(download_url).send().await {
+                                                                        Ok(jar_response) if jar_response.status().is_success() => {
+                                                                            if let Some(content_length) = jar_response.content_length() {
+                                                                                tracker.set_total(content_length as usize);
+                                                                            }
+                                                                            if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                                                tracker.add_count(jar_bytes.len());
+                                                                                tracker.notify();
+                                                                                let vanilla_jar_path = server_dir.join("server.jar");
+                                                                                if let Ok(_) = tokio::fs::write(&vanilla_jar_path, &jar_bytes).await {
+                                                                                    // Step 2: Download Forge installer
+                                                                                    tracker.set_title(Arc::from(format!("Downloading Forge {} installer...", forge_version).as_str()));
+                                                                                    tracker.notify();
+                                                                                    
+                                                                                    let installer_url = format!(
+                                                                                        "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}-installer.jar",
+                                                                                        forge_version, forge_version
+                                                                                    );
+                                                                                    
+                                                                                    // Cache installer in shared location
+                                                                                    let cached_forge_installer = installer_base.join(format!("forge-{}-installer.jar", forge_version));
+                                                                                    
+                                                                                    let installer_path = if cached_forge_installer.exists() {
+                                                                                        tracker.set_title(Arc::from(format!("Using cached Forge {} installer", forge_version).as_str()));
+                                                                                        tracker.notify();
+                                                                                        cached_forge_installer.clone()
+                                                                                    } else {
+                                                                                        match client.get(&installer_url).send().await {
+                                                                                            Ok(installer_response) if installer_response.status().is_success() => {
+                                                                                                // Reset tracker for installer download phase
+                                                                                                tracker.set_total(0);
+                                                                                                tracker.set_count(0);
+                                                                                                if let Some(content_length) = installer_response.content_length() {
+                                                                                                    tracker.set_total(content_length as usize);
+                                                                                                    tracker.notify();
+                                                                                                }
+                                                                                                if let Ok(installer_bytes) = installer_response.bytes().await {
+                                                                                                    if installer_bytes.len() > 0 {
+                                                                                                        tracker.set_count(installer_bytes.len());
+                                                                                                        tracker.notify();
+                                                                                                    }
+                                                                                                    if let Ok(_) = tokio::fs::write(&cached_forge_installer, &installer_bytes).await {
+                                                                                                        tracker.set_title(Arc::from(format!("✓ Forge installer downloaded and cached").as_str()));
+                                                                                                        tracker.notify();
+                                                                                                        cached_forge_installer.clone()
+                                                                                                    } else {
+                                                                                                        sender.send_error("Failed to write Forge installer to disk".to_string());
+                                                                                                        return Ok(());
+                                                                                                    }
+                                                                                                } else {
+                                                                                                    sender.send_error("Failed to download Forge installer".to_string());
+                                                                                                    return Ok(());
+                                                                                                }
+                                                                                            },
+                                                                                            _ => {
+                                                                                                sender.send_error(format!("Failed to download Forge {} installer", forge_version));
+                                                                                                return Ok(());
+                                                                                            }
+                                                                                        }
+                                                                                    };
+                                                                                    
+                                                                                    tracker.set_title(Arc::from(format!("Running Forge installer to generate server JAR...").as_str()));
+                                                                                    tracker.notify();
+                                                                                    
+                                                                                    // Step 3: Run the Forge installer (headless to disable GUI)
+                                                                                    match std::process::Command::new("java")
+                                                                                        .arg("-Xmx1G")
+                                                                                        .arg("-Djava.awt.headless=true")
+                                                                                        .arg("-jar")
+                                                                                        .arg(&installer_path)
+                                                                                        .arg("--installServer")
+                                                                                        .current_dir(&server_dir)
+                                                                                        .output()
+                                                                                    {
+                                                                                        Ok(output) => {
+                                                                                            if output.status.success() {
+                                                                                                tracker.set_title(Arc::from(format!("✓ Forge {} server installed successfully", forge_version).as_str()));
+                                                                                                tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                                                                                tracker.notify();
+                                                                                                sender.send(MessageToFrontend::ServerAdded {
+                                                                                                    name: name.into(),
+                                                                                                    software: "Forge".into(),
+                                                                                                    version: (&version[..]).into(),
+                                                                                                    path: Arc::from(server_dir.to_path_buf()),
+                                                                                                });
+                                                                                            } else {
+                                                                                                let _error_msg = String::from_utf8_lossy(&output.stderr);
+                                                                                                tracker.set_title(Arc::from(format!("✗ Forge installer completed with errors. If forge-{}-universal.jar or forge-{}-server.jar exists, server is ready.", forge_version, forge_version).as_str()));
+                                                                                                tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                                                                                tracker.notify();
+                                                                                            }
+                                                                                        },
+                                                                                        Err(e) => {
+                                                                                            sender.send_warning(format!("Could not auto-run Forge installer: {}. Please manually run: java -Xmx1G -jar forge-{}-installer.jar --installServer in the server directory", e, forge_version));
+                                                                                        }
+                                                                                    }
+                                                                                } else {
+                                                                                    sender.send_error("Failed to write vanilla server JAR to disk".to_string());
+                                                                                }
+                                                                            }
+                                                                        },
+                                                                        _ => sender.send_error(format!("Failed to download Minecraft {} JAR", version)),
+                                                                    }
+                                                                } else {
+                                                                    sender.send_error("Minecraft server JAR URL not found in version manifest".to_string());
+                                                                }
+                                                            } else {
+                                                                sender.send_error("Failed to parse version JSON".to_string());
+                                                            }
+                                                        },
+                                                        _ => sender.send_error(format!("Failed to fetch version JSON for {}", version)),
                                                     }
+                                                } else {
+                                                    sender.send_error("Version URL not found in manifest".to_string());
                                                 }
                                             } else {
-                                                sender.send_error("Failed to write installer to disk".to_string());
+                                                sender.send_error(format!("Minecraft version {} not found", version));
                                             }
+                                        } else {
+                                            sender.send_error("No versions in manifest".to_string());
                                         }
-                                    },
-                                    _ => sender.send_error(format!("Failed to download Forge {} installer", forge_version)),
+                                    } else {
+                                        sender.send_error("Failed to parse version manifest".to_string());
+                                    }
+                                } else {
+                                    sender.send_error("Failed to fetch version manifest".to_string());
                                 }
                             } else {
                                 sender.send_error(format!("No compatible Forge version found for Minecraft {}. Check https://files.minecraftforge.net/", version));
@@ -1655,7 +2092,8 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
             }
         },
         "NeoForge" => {
-            sender.send_info("Fetching NeoForge versions metadata...");
+            tracker.set_title(Arc::from("Fetching NeoForge versions metadata..."));
+            tracker.notify();
             
             match client.get("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml").send().await {
                 Ok(response) if response.status().is_success() => {
@@ -1676,9 +2114,12 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                             if minecraft_version_parts.len() < 3 {
                                 minecraft_version_parts.push(schema::forge::VersionFragment::Number(0))
                             }
-                            if minecraft_version_parts[0] == schema::forge::VersionFragment::Number(1) {
+                            if !minecraft_version_parts.is_empty() && minecraft_version_parts[0] == schema::forge::VersionFragment::Number(1) {
                                 minecraft_version_parts.remove(0);
                             }
+                            
+                            tracker.set_title(Arc::from(format!("Looking for NeoForge version matching pattern for Minecraft {}", version).as_str()));
+                            tracker.notify();
                             
                             let mut matching_version: Option<String> = None;
                             let mut matching_parts = Vec::new();
@@ -1694,46 +2135,91 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                             }
                             
                             if let Some(neoforge_version) = matching_version {
-                                sender.send_info(format!("Downloading NeoForge {} installer...", neoforge_version));
+                                tracker.set_title(Arc::from(format!("Downloading NeoForge {} installer...", neoforge_version).as_str()));
+                                tracker.notify();
                                 
                                 let download_url = format!(
                                     "https://maven.neoforged.net/releases/net/neoforged/neoforge/{}/neoforge-{}-installer.jar",
                                     neoforge_version, neoforge_version
                                 );
                                 
-                                match client.get(&download_url).send().await {
-                                    Ok(jar_response) if jar_response.status().is_success() => {
-                                        if let Ok(jar_bytes) = jar_response.bytes().await {
-                                            let installer_path = server_dir.join(format!("neoforge-{}-installer.jar", neoforge_version));
-                                            if let Ok(_) = tokio::fs::write(&installer_path, &jar_bytes).await {
-                                                sender.send_info(format!("✓ NeoForge installer downloaded. Now running installer to generate server JAR..."));
-                                                
-                                                // Try to run the installer automatically
-                                                match std::process::Command::new("java")
-                                                    .args(["Xmx1G", "-jar"])
-                                                    .arg(&installer_path)
-                                                    .arg("--installServer")
-                                                    .current_dir(&server_dir)
-                                                    .output()
-                                                {
-                                                    Ok(output) => {
-                                                        if output.status.success() {
-                                                            sender.send_info(format!("✓ NeoForge server JAR created successfully. Server is ready to launch!"));
-                                                        } else {
-                                                            let _error_msg = String::from_utf8_lossy(&output.stderr);
-                                                            sender.send_warning(format!("NeoForge installer completed but may need attention. Check console for details. If neoforge-{}-server.jar exists, server is ready.", neoforge_version));
-                                                        }
-                                                    },
-                                                    Err(e) => {
-                                                        sender.send_warning(format!("Could not auto-run NeoForge installer: {}. Please manually run: java -Xmx1G -jar neoforge-{}-installer.jar --installServer", e, neoforge_version));
-                                                    }
+                                // Cache installer in shared location
+                                let installer_cache_dir = installer_base.clone();
+                                tokio::fs::create_dir_all(&installer_cache_dir).await.ok();
+                                let cached_installer = installer_cache_dir.join(format!("neoforge-{}-installer.jar", neoforge_version));
+                                
+                                let installer_path = if cached_installer.exists() {
+                                    tracker.set_title(Arc::from(format!("Using cached NeoForge {} installer", neoforge_version).as_str()));
+                                    tracker.notify();
+                                    cached_installer.clone()
+                                } else {
+                                    match client.get(&download_url).send().await {
+                                        Ok(jar_response) if jar_response.status().is_success() => {
+                                            // Reset tracker for installer download phase
+                                            tracker.set_total(0);
+                                            tracker.set_count(0);
+                                            if let Some(content_length) = jar_response.content_length() {
+                                                tracker.set_total(content_length as usize);
+                                                tracker.notify();
+                                            }
+                                            if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                if jar_bytes.len() > 0 {
+                                                    tracker.set_count(jar_bytes.len());
+                                                    tracker.notify();
+                                                }
+                                                if let Ok(_) = tokio::fs::write(&cached_installer, &jar_bytes).await {
+                                                    tracker.set_title(Arc::from(format!("✓ NeoForge installer downloaded and cached").as_str()));
+                                                    tracker.notify();
+                                                    cached_installer.clone()
+                                                } else {
+                                                    sender.send_error("Failed to write NeoForge installer to disk".to_string());
+                                                    return Ok(());
                                                 }
                                             } else {
-                                                sender.send_error("Failed to write installer to disk".to_string());
+                                                sender.send_error("Failed to download NeoForge installer".to_string());
+                                                return Ok(());
                                             }
+                                        },
+                                        _ => {
+                                            sender.send_error(format!("Failed to download NeoForge {} installer", neoforge_version));
+                                            return Ok(());
+                                        }
+                                    }
+                                };
+                                
+                                tracker.set_title(Arc::from(format!("Running NeoForge installer to generate server JAR...").as_str()));
+                                tracker.notify();
+                                
+                                // Try to run the installer automatically (headless to disable GUI)
+                                match std::process::Command::new("java")
+                                    .arg("-Xmx1G")
+                                    .arg("-Djava.awt.headless=true")
+                                    .arg("-Dfml.earlyprogresswindow=false")
+                                    .arg("-jar")
+                                    .arg(&installer_path)
+                                    .arg("--installServer")
+                                    .current_dir(&server_dir)
+                                    .output()
+                                {
+                                    Ok(output) => {
+                                        if output.status.success() {
+                                            tracker.set_title(Arc::from(format!("✓ NeoForge {} server installed successfully", neoforge_version).as_str()));
+                                            tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                            tracker.notify();
+                                            sender.send(MessageToFrontend::ServerAdded {
+                                                name: name.into(),
+                                                software: "NeoForge".into(),
+                                                version: (&version[..]).into(),
+                                                path: Arc::from(server_dir.to_path_buf()),
+                                            });
+                                        } else {
+                                            let error_msg = String::from_utf8_lossy(&output.stderr);
+                                            sender.send_warning(format!("NeoForge installer completed. If neoforge-{}-server.jar exists, server is ready. Error details: {}", neoforge_version, error_msg));
                                         }
                                     },
-                                    _ => sender.send_error(format!("Failed to download NeoForge {} installer", neoforge_version)),
+                                    Err(e) => {
+                                        sender.send_error(format!("Could not run NeoForge installer: {}. Please manually run: java -Xmx1G -jar neoforge-{}-installer.jar --installServer in the server directory", e, neoforge_version));
+                                    }
                                 }
                             } else {
                                 sender.send_error(format!("No compatible NeoForge version found for Minecraft {}. Check https://neoforged.net/", version));
@@ -1744,8 +2230,112 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                 _ => sender.send_error("Failed to fetch NeoForge versions. Check your internet connection.".to_string()),
             }
         },
+        "Vanilla" => {
+            tracker.set_title(Arc::from(format!("Downloading vanilla Minecraft {} server JAR...", version).as_str()));
+            tracker.notify();
+            
+            // Fetch the version manifest to get download URL
+            if let Ok(version_response) = client.get("https://launchermeta.mojang.com/mc/game/version_manifest.json").send().await {
+                if let Ok(manifest_data) = version_response.json::<serde_json::Value>().await {
+                    if let Some(versions) = manifest_data["versions"].as_array() {
+                        if let Some(version_entry) = versions.iter().find(|v| v["id"].as_str().map(|id| id == version).unwrap_or(false)) {
+                            if let Some(url) = version_entry["url"].as_str() {
+                                match client.get(url).send().await {
+                                    Ok(version_response) if version_response.status().is_success() => {
+                                        if let Ok(version_json) = version_response.json::<serde_json::Value>().await {
+                                            if let Some(download_url) = version_json["downloads"]["server"]["url"].as_str() {
+                                                match client.get(download_url).send().await {
+                                                    Ok(jar_response) if jar_response.status().is_success() => {
+                                                        if let Some(content_length) = jar_response.content_length() {
+                                                            tracker.set_total(content_length as usize);
+                                                            tracker.notify();
+                                                        }
+                                                        if let Ok(jar_bytes) = jar_response.bytes().await {
+                                                            if jar_bytes.len() > 0 {
+                                                                tracker.set_count(jar_bytes.len());
+                                                                tracker.notify();
+                                                            }
+                                                            let jar_path = server_dir.join("server.jar");
+                                                            if let Ok(_) = tokio::fs::write(&jar_path, jar_bytes).await {
+                                                                tracker.set_title(Arc::from("✓ Vanilla server downloaded successfully"));
+                                                                tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                                                tracker.notify();
+                                                                sender.send(MessageToFrontend::ServerAdded {
+                                                                    name: name.into(),
+                                                                    software: "Vanilla".into(),
+                                                                    version: (&version[..]).into(),
+                                                                    path: Arc::from(server_dir.to_path_buf()),
+                                                                });
+                                                            } else {
+                                                                tracker.set_title(Arc::from("✗ Failed to write JAR to disk"));
+                                                                tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                                tracker.notify();
+                                                            }
+                                                        }
+                                                    },
+                                                    _ => {
+                                                        tracker.set_title(Arc::from(format!("✗ Failed to download Minecraft {} JAR", version).as_str()));
+                                                        tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                        tracker.notify();
+                                                    }
+                                                }
+                                            } else {
+                                                tracker.set_title(Arc::from("✗ Minecraft server JAR URL not found"));
+                                                tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                tracker.notify();
+                                            }
+                                        } else {
+                                            tracker.set_title(Arc::from("✗ Failed to parse version JSON"));
+                                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                                            tracker.notify();
+                                        }
+                                    },
+                                    _ => {
+                                        tracker.set_title(Arc::from(format!("✗ Failed to fetch version JSON for {}", version).as_str()));
+                                        tracker.set_finished(ProgressTrackerFinishType::Error);
+                                        tracker.notify();
+                                    }
+                                }
+                            } else {
+                                tracker.set_title(Arc::from("✗ Version URL not found in manifest"));
+                                tracker.set_finished(ProgressTrackerFinishType::Error);
+                                tracker.notify();
+                            }
+                        } else {
+                            tracker.set_title(Arc::from(format!("✗ Minecraft version {} not found", version).as_str()));
+                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                            tracker.notify();
+                        }
+                    } else {
+                        tracker.set_title(Arc::from("✗ No versions in manifest"));
+                        tracker.set_finished(ProgressTrackerFinishType::Error);
+                        tracker.notify();
+                    }
+                } else {
+                    tracker.set_title(Arc::from("✗ Failed to parse version manifest"));
+                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                    tracker.notify();
+                }
+            } else {
+                tracker.set_title(Arc::from("✗ Failed to fetch version manifest"));
+                tracker.set_finished(ProgressTrackerFinishType::Error);
+                tracker.notify();
+            }
+        },
         _ => sender.send_error(format!("Unknown server software: {}", software)),
     }
+    
+    // Mark progress as finished
+    tracker.set_finished(ProgressTrackerFinishType::Normal);
+    
+    // Send server added message to notify UI
+    let message = MessageToFrontend::ServerAdded {
+        name: name.into(),
+        software: software.into(),
+        version: version.into(),
+        path: Arc::from(server_dir),
+    };
+    sender.send(message);
     
     Ok(())
 }

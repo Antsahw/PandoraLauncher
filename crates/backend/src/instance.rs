@@ -32,6 +32,7 @@ pub struct Instance {
     pub configuration: Persistent<InstanceConfiguration>,
 
     pub launch_keepalive: Option<KeepAliveHandle>,
+    pub game_output_id: Option<usize>,
     pub processes: Vec<Child>,
 
     pub worlds_state: BridgeDataLoadState,
@@ -740,6 +741,7 @@ impl Instance {
             configuration: instance_info,
 
             launch_keepalive: None,
+            game_output_id: None,
             processes: Vec::new(),
 
             worlds_state: BridgeDataLoadState::default(),
@@ -850,12 +852,13 @@ impl Instance {
     }
 
     pub fn create_modify_message(&mut self) -> MessageToFrontend {
+        let real_root = self.resolve_real_root_path();
         MessageToFrontend::InstanceModified {
             id: self.id,
             name: self.name,
             icon: self.icon.clone(),
-            root_path: self.resolve_real_root_path(),
-            dot_minecraft_folder: self.dot_minecraft_path.clone(),
+            root_path: real_root.clone(),
+            dot_minecraft_folder: real_root.join(".minecraft").into(),
             configuration: self.configuration.get().clone(),
             status: self.status(),
         }

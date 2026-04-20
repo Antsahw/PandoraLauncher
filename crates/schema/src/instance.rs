@@ -23,6 +23,8 @@ pub struct InstanceConfiguration {
     pub jvm_flags: Option<InstanceJvmFlagsConfiguration>,
     #[serde(default, deserialize_with = "crate::try_deserialize", skip_serializing_if = "is_default_jvm_binary_configuration")]
     pub jvm_binary: Option<InstanceJvmBinaryConfiguration>,
+    #[serde(default, deserialize_with = "crate::try_deserialize", skip_serializing_if = "is_default_java_runtime_configuration")]
+    pub java_runtime: Option<InstanceJavaRuntimeConfiguration>,
     #[serde(default, deserialize_with = "crate::try_deserialize", skip_serializing_if = "is_default_linux_wrapper_configuration")]
     pub linux_wrapper: Option<InstanceLinuxWrapperConfiguration>,
     #[serde(default, deserialize_with = "crate::try_deserialize", skip_serializing_if = "is_default_system_libraries_configuration")]
@@ -44,6 +46,7 @@ impl InstanceConfiguration {
             wrapper_command: None,
             jvm_flags: None,
             jvm_binary: None,
+            java_runtime: None,
             linux_wrapper: None,
             system_libraries: None,
             instance_fallback_icon: None,
@@ -116,17 +119,39 @@ fn is_default_jvm_flags_configuration(config: &Option<InstanceJvmFlagsConfigurat
 pub struct InstanceJvmBinaryConfiguration {
     pub enabled: bool,
     pub path: Option<Arc<Path>>,
+    /// Force a specific Java version (8, 11, 17, 21, etc). If not set, uses launcher default
+    #[serde(default, skip_serializing_if = "crate::skip_if_none")]
+    pub forced_java_version: Option<u32>,
 }
 
 fn is_default_jvm_binary_configuration(config: &Option<InstanceJvmBinaryConfiguration>) -> bool {
     if let Some(config) = config {
-        !config.enabled && config.path.is_none()
+        !config.enabled && config.path.is_none() && config.forced_java_version.is_none()
     } else {
         true
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct InstanceJavaRuntimeConfiguration {
+    /// Whether to use a specific Java runtime for this instance (overrides global default)
+    pub enabled: bool,
+    /// Name of the Java runtime to use (e.g., "java21", "system")
+    /// If "system", uses system Java from PATH
+    /// If empty string or not set, uses global default
+    #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
+    pub runtime_name: String,
+}
+
+fn is_default_java_runtime_configuration(config: &Option<InstanceJavaRuntimeConfiguration>) -> bool {
+    if let Some(config) = config {
+        !config.enabled && config.runtime_name.is_empty()
+    } else {
+        true
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct InstanceLinuxWrapperConfiguration {
     #[serde(default, deserialize_with = "crate::try_deserialize")]
     pub use_mangohud: bool,

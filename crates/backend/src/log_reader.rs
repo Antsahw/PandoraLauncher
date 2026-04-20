@@ -39,7 +39,7 @@ pub fn replace(string: &str) -> Cow<'_, str> {
     replaced
 }
 
-pub fn start_game_output(stdout: ChildStdout, stderr: Option<ChildStderr>, sender: FrontendHandle, instance_name: impl Into<String>) {
+pub fn start_game_output(stdout: ChildStdout, stderr: Option<ChildStderr>, sender: FrontendHandle, instance_name: impl Into<String>) -> usize {
     let id = GAME_OUTPUT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let keep_alive = KeepAlive::new();
     let keep_alive_handle = keep_alive.create_handle();
@@ -129,6 +129,8 @@ pub fn start_game_output(stdout: ChildStdout, stderr: Option<ChildStderr>, sende
             });
         }
     });
+    
+    id
 }
 
 #[derive(Error, Debug)]

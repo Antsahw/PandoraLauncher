@@ -48,6 +48,14 @@ impl ServersPage {
             backend_handle: data.backend_handle.clone(),
         }
     }
+
+    pub fn reload_servers(&mut self, cx: &mut Context<Self>) {
+        // Trigger a reload of the server list from disk
+        self.server_table.update(cx, |table, _cx| {
+            table.delegate_mut().reload_from_disk();
+        });
+        cx.notify();
+    }
 }
 
 impl Page for ServersPage {
@@ -76,6 +84,11 @@ impl Page for ServersPage {
 
 impl Render for ServersPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Always refresh server list from disk when rendering to catch any newly created servers
+        self.server_table.update(cx, |table, _cx| {
+            table.delegate_mut().reload_from_disk();
+        });
+        
         match InterfaceConfig::get(cx).servers_view_mode {
             ServersViewMode::Cards => {
                 let cards = self.server_table.update(cx, |table, cx| {

@@ -43,10 +43,9 @@ impl InstanceList {
             let instance_list = Self {
                 columns: vec![
                     Column::new("controls", "")
-                        .width(150.)
-                        .fixed_left()
+                        .width(250.)
                         .movable(false)
-                        .resizable(false),
+                        .resizable(true),
                     Column::new("name", ts!("instance.name"))
                         .width(150.)
                         .fixed_left()
@@ -122,6 +121,19 @@ impl InstanceList {
                         root::switch_page(ui::PageType::InstancePage { name: name.clone() },
                             &[ui::PageType::Instances], window, cx);
                     }
+                }))
+                .child(Button::new(("open_folder", index)).flex_1().small().info().icon(crate::icon::PandoraIcon::FolderOpen).on_click({
+                    let name = item.name.clone();
+                    move |_, window, cx| {
+                        let home = std::env::var("HOME").ok();
+                        if let Some(home_dir) = home {
+                            let path = std::path::PathBuf::from(home_dir)
+                                .join(".local/share/PandoraLauncher/instances")
+                                .join(name.as_str())
+                                .join(".minecraft");
+                            crate::open_folder(&path, window, cx);
+                        }
+                    }
                 })))
 
     }
@@ -171,18 +183,35 @@ impl TableDelegate for InstanceList {
                 "controls" => {
                     let play_button = render_play_button(item, self.backend_handle.clone());
 
+                    let open_folder_button = Button::new(("open_folder", row_ix))
+                        .info()
+                        .small()
+                        .icon(crate::icon::PandoraIcon::Folder)
+                        .on_click({
+                            let name = item.name.clone();
+                            move |_, window, cx| {
+                                let home = std::env::var("HOME").ok();
+                                if let Some(home_dir) = home {
+                                    let path = std::path::PathBuf::from(home_dir)
+                                        .join(".local/share/PandoraLauncher/instances")
+                                        .join(name.as_str())
+                                        .join(".minecraft");
+                                    crate::open_folder(&path, window, cx);
+                                }
+                            }
+                        });
+
                     h_flex()
-                        .size_full()
                         .gap_2()
-                        .border_r_4()
-                        .child(play_button.w_1_2().small())
-                        .child(Button::new("view").w_1_2().small().info().label(ts!("instance.view")).on_click({
+                        .child(play_button.small())
+                        .child(Button::new("view").small().info().label(ts!("instance.view")).on_click({
                             let name = item.name.clone();
                             move |_, window, cx| {
                                 root::switch_page(ui::PageType::InstancePage { name: name.clone() },
                                     &[ui::PageType::Instances], window, cx);
                             }
                         }))
+                        .child(open_folder_button.small())
                         .into_any_element()
                 },
                 "loader" => item.configuration.loader.name().into_any_element(),

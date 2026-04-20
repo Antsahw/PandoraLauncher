@@ -11,6 +11,44 @@ pub struct BackendConfig {
     pub dont_open_game_output_when_launching: bool,
     #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
     pub proxy: ProxyConfig,
+    #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
+    pub java_runtimes: JavaRuntimesConfig,
+}
+
+use std::collections::BTreeMap;
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct JavaRuntimesConfig {
+    /// Default Java runtime name to use globally (e.g., "java21", "system")
+    /// If "system", uses system Java from PATH
+    #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
+    pub default_runtime: String,
+    
+    /// Map of runtime names to their configurations
+    /// Example: {"java21": JavaRuntime {...}, "java17": JavaRuntime {...}}
+    #[serde(default, skip_serializing_if = "crate::skip_if_none")]
+    pub runtimes: Option<BTreeMap<String, JavaRuntime>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JavaRuntime {
+    /// Friendly name for display (e.g., "Java 21.0.1")
+    #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
+    pub name: String,
+    
+    /// Full path to Java executable
+    /// On Windows: C:\Program Files\Java\jdk-21\bin\java.exe
+    /// On Unix: /usr/lib/jvm/java-21-openjdk/bin/java
+    #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
+    pub path: String,
+    
+    /// Java version (8, 11, 17, 21, etc.)
+    #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
+    pub version: u32,
+    
+    /// Whether this runtime is available/valid
+    #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
+    pub available: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]

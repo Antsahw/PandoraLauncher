@@ -113,9 +113,16 @@ impl Page for InstancePage {
             .icon(PandoraIcon::FolderOpen)
             .label(ts!("instance.open_folder"))
             .on_click({
-            let dot_minecraft = instance.dot_minecraft_folder.clone();
+            let instance_name = instance.name.clone();
             move |_, window, cx| {
-                crate::open_folder(&dot_minecraft, window, cx);
+                let home = std::env::var("HOME").ok();
+                if let Some(home_dir) = home {
+                    let path = std::path::PathBuf::from(home_dir)
+                        .join(".local/share/PandoraLauncher/instances")
+                        .join(instance_name.as_str())
+                        .join(".minecraft");
+                    crate::open_folder(&path, window, cx);
+                }
             }
         });
 
