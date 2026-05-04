@@ -338,6 +338,13 @@ impl BackendState {
                 }
                 self.apply_syncing_to_instance(id);
             },
+            MessageToBackend::SetInstanceSkipIntegrityCheck { id, skip_integrity_check } => {
+                if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
+                    instance.configuration.modify(|configuration| {
+                        configuration.skip_integrity_check = skip_integrity_check;
+                    });
+                }
+            },
             MessageToBackend::SetInstanceMemory { id, memory } => {
                 if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
                     instance.configuration.modify(|configuration| {

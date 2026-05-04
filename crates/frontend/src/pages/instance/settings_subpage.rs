@@ -37,6 +37,7 @@ pub struct InstanceSettingsSubpage {
     loader_versions_state: TypelessFrontendMetadataResult,
     loader_version_select_state: Entity<SelectState<SearchableVec<&'static str>>>,
     disable_file_syncing: bool,
+    skip_integrity_check: bool,
 
     memory_override_enabled: bool,
     memory_min_input_state: Entity<InputState>,
@@ -91,6 +92,7 @@ impl InstanceSettingsSubpage {
         let preferred_loader_version = entry.configuration.preferred_loader_version.map(|s| s.as_str()).unwrap_or("Latest");
         let account = entry.configuration.preferred_account;
         let disable_file_syncing = entry.configuration.disable_file_syncing;
+        let skip_integrity_check = entry.configuration.skip_integrity_check;
 
         let memory = entry.configuration.memory.unwrap_or_default();
         let wrapper_command = entry.configuration.wrapper_command.clone().unwrap_or_default();
@@ -210,6 +212,7 @@ impl InstanceSettingsSubpage {
             loader_select_state,
             loader_version_select_state,
             disable_file_syncing,
+            skip_integrity_check,
             memory_override_enabled: memory.enabled,
             memory_min_input_state,
             memory_max_input_state,
@@ -806,6 +809,16 @@ impl Render for InstanceSettingsSubpage {
                     page.backend_handle.send(MessageToBackend::SetInstanceDisableFileSyncing {
                         id: page.instance_id,
                         disable_file_syncing: *value
+                    });
+                }))
+            ))
+            .child(crate::labelled(
+                "Integrity Check",
+                Checkbox::new("integrity").label("Skip integrity check").checked(self.skip_integrity_check).on_click(cx.listener(|page, value, _, _| {
+                    page.skip_integrity_check = *value;
+                    page.backend_handle.send(MessageToBackend::SetInstanceSkipIntegrityCheck {
+                        id: page.instance_id,
+                        skip_integrity_check: *value
                     });
                 }))
             ));

@@ -101,6 +101,10 @@ pub enum MessageToBackend {
         id: InstanceID,
         disable_file_syncing: bool,
     },
+    SetInstanceSkipIntegrityCheck {
+        id: InstanceID,
+        skip_integrity_check: bool,
+    },
     SetInstanceMemory {
         id: InstanceID,
         memory: InstanceMemoryConfiguration,

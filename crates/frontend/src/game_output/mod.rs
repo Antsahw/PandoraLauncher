@@ -3,7 +3,7 @@ use std::{cell::RefCell, num::NonZeroUsize, ops::Range, rc::Rc, sync::Arc};
 use ftree::FenwickTree;
 use gpui::{prelude::*, *};
 use gpui_component::{
-    button::Button, h_flex, input::{Input, InputEvent, InputState}, scroll::{Scrollbar, ScrollbarHandle}, v_flex, ActiveTheme as _, Icon, Sizable, Disableable
+    button::{Button, ButtonVariants}, h_flex, input::{Input, InputEvent, InputState}, scroll::{Scrollbar, ScrollbarHandle}, v_flex, ActiveTheme as _, Icon, Sizable, Disableable
 };
 use lru::LruCache;
 use rustc_hash::FxBuildHasher;
@@ -1505,7 +1505,8 @@ impl Render for GameOutputRoot {
                 if is_server {
                     if let Some(command_state) = &self.server_command_state {
                         let command_input = Input::new(command_state)
-                            .flex_1();
+                            .flex_1()
+                            .small();
                         
                         action_buttons = action_buttons.child(command_input);
                     }
@@ -1533,12 +1534,13 @@ impl Render for GameOutputRoot {
                 
                 if let Some(folder_path) = folder_path {
                     let folder_btn = Button::new("open_folder")
+                        .info()
+                        .small()
                         .icon(PandoraIcon::Folder)
+                        .w(px(44.0))
                         .on_click(cx.listener(move |_, _, _, _| {
                             let _ = open::that(folder_path.as_ref());
-                        }))
-                        .p_1()
-                        .h(px(24.0));
+                        }));
                     
                     action_buttons = action_buttons.child(folder_btn);
                 }
@@ -1558,10 +1560,11 @@ impl Render for GameOutputRoot {
                     .unwrap_or(false);
                 
                 let mut kill_btn = Button::new("kill_instance")
+                    .info()
+                    .small()
                     .icon(PandoraIcon::Close)
                     .label("Kill")
-                    .p_1()
-                    .h(px(24.0));
+                    .w(px(60.0));
                 
                 if is_instance_running {
                     kill_btn = kill_btn.on_click(cx.listener(move |root, _, _, _cx| {

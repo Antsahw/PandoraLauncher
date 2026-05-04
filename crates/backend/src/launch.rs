@@ -135,6 +135,7 @@ impl Launcher {
             });
         }
 
+        let skip_integrity_check = instance_info.skip_integrity_check;
         let mojang_java_binary_future = self.load_mojang_java_binary(
             &self.meta,
             http_client,
@@ -143,12 +144,13 @@ impl Launcher {
             &modal_action.trackers,
             launch_tracker,
             java_config,
+            skip_integrity_check,
         );
         let load_assets_future =
-            self.load_assets(&self.meta, http_client, &dot_minecraft_path, &version_info, &modal_action.trackers, launch_tracker);
+            self.load_assets(&self.meta, http_client, &dot_minecraft_path, &version_info, &modal_action.trackers, launch_tracker, skip_integrity_check);
         let load_libraries_future =
-            self.load_libraries(http_client, &artifacts, &modal_action.trackers, launch_tracker);
-        let load_log_configuration = self.load_log_configuration(http_client, version_info.logging.as_ref());
+            self.load_libraries(http_client, &artifacts, &modal_action.trackers, launch_tracker, skip_integrity_check);
+        let load_log_configuration = self.load_log_configuration(http_client, version_info.logging.as_ref(), skip_integrity_check);
 
         log::debug!("Loading java, assets, libraries and log configuration");
 
@@ -539,8 +541,9 @@ impl Launcher {
             progress_trackers,
             launch_tracker,
             java_config,
+            instance_info.skip_integrity_check,
         );
-        let load_installer_library_future = self.load_libraries(http_client, artifacts, progress_trackers, launch_tracker);
+        let load_installer_library_future = self.load_libraries(http_client, artifacts, progress_trackers, launch_tracker, instance_info.skip_integrity_check);
 
         let (artifact_load_result, java_load_result) = futures::future::try_join(
             load_installer_library_future.map_err(LaunchError::from),
@@ -651,7 +654,7 @@ impl Launcher {
             Some(artifact)
         }).collect::<Vec<_>>();
 
-        self.load_libraries(http_client, &libraries, progress_trackers, launch_tracker).await?;
+        self.load_libraries(http_client, &libraries, progress_trackers, launch_tracker, instance_info.skip_integrity_check).await?;
 
         let forge_temp = self.directories.temp_dir.join("forge_installer");
 
@@ -875,7 +878,7 @@ impl Launcher {
                 Some(artifact)
             }).collect::<Vec<_>>();
 
-            self.load_libraries(http_client, &libraries, progress_trackers, launch_tracker).await?;
+            self.load_libraries(http_client, &libraries, progress_trackers, launch_tracker, instance_info.skip_integrity_check).await?;
         }
 
         Ok((Arc::new(version.apply_to(&base_version)), AddVanillaJar::Yes))
@@ -923,6 +926,7 @@ impl Launcher {
         progress_trackers: &ProgressTrackers,
         launch_tracker: &ProgressTracker,
         java_config: &schema::backend_config::JavaRuntimesConfig,
+        skip_integrity_check: bool,
     ) -> Result<PathBuf, LoadJavaRuntimeError> {
         if let Some(jvm_binary) = &configuration.jvm_binary {
             if jvm_binary.enabled && let Some(path) = &jvm_binary.path {
@@ -1047,7 +1051,7 @@ impl Launcher {
         progress_trackers.push(java_runtime_tracker.clone());
         java_runtime_tracker.notify();
 
-        let result = do_java_runtime_load(http_client, runtime_component_dir, fresh_install, runtime, &java_runtime_tracker).await;
+        let result = do_java_runtime_load(http_client, runtime_component_dir, fresh_install, runtime, &java_runtime_tracker, skip_integrity_check).await;
 
         java_runtime_tracker.set_finished(ProgressTrackerFinishType::from_err(result.is_err()));
         java_runtime_tracker.notify();
@@ -1066,6 +1070,7 @@ impl Launcher {
         version_info: &MinecraftVersion,
         progress_trackers: &ProgressTrackers,
         launch_tracker: &ProgressTracker,
+        skip_integrity_check: bool,
     ) -> Result<String, LoadAssetObjectsError> {
         let asset_index = format!("{}", version_info.assets);
 
@@ -1088,7 +1093,7 @@ impl Launcher {
             self.directories.assets_objects_dir.clone()
         };
 
-        let result = do_asset_objects_load(http_client, assets_index, assets_dir, &assets_tracker).await;
+        let result = do_asset_objects_load(http_client, assets_index, assets_dir, &assets_tracker, skip_integrity_check).await;
 
         assets_tracker.set_finished(ProgressTrackerFinishType::from_err(result.is_err()));
         assets_tracker.notify();
@@ -1107,6 +1112,7 @@ impl Launcher {
         artifacts: &[GameLibraryArtifact],
         progress_trackers: &ProgressTrackers,
         launch_tracker: &ProgressTracker,
+        skip_integrity_check: bool,
     ) -> Result<Vec<(Ustr, PathBuf)>, LoadLibrariesError> {
         let initial_title = Arc::from("Verifying integrity of game libraries");
         let libraries_tracker = ProgressTracker::new(initial_title, self.sender.clone());
@@ -1114,7 +1120,7 @@ impl Launcher {
         libraries_tracker.notify();
 
         let result =
-            do_libraries_load(http_client, artifacts, self.directories.libraries_dir.clone(), &libraries_tracker).await;
+            do_libraries_load(http_client, artifacts, self.directories.libraries_dir.clone(), &libraries_tracker, skip_integrity_check).await;
 
         libraries_tracker.set_finished(ProgressTrackerFinishType::from_err(result.is_err()));
         libraries_tracker.notify();
@@ -1129,6 +1135,7 @@ impl Launcher {
         &self,
         http_client: &reqwest::Client,
         logging: Option<&GameLogging>,
+        skip_integrity_check: bool,
     ) -> Option<OsString> {
         let Some(logging) = logging else {
             return None;
@@ -1151,7 +1158,10 @@ impl Launcher {
             return None;
         };
 
-        let valid_hash_on_disk = {
+        let valid_hash_on_disk = if skip_integrity_check {
+            // When skipping integrity check, just verify file exists
+            path.exists()
+        } else {
             let path = path.clone();
             tokio::task::spawn_blocking(move || {
                 crate::check_sha1_hash(&path, expected_hash).unwrap_or(false)
@@ -1465,6 +1475,7 @@ async fn do_java_runtime_load(
     fresh_install: bool,
     runtime: Arc<JavaRuntimeComponentManifest>,
     java_runtime_tracker: &ProgressTracker,
+    skip_integrity_check: bool,
 ) -> Result<PathBuf, LoadJavaRuntimeError> {
     let mut links = HashMap::new();
 
@@ -1501,7 +1512,10 @@ async fn do_java_runtime_load(
                 let disk_semaphore = &disk_semaphore;
 
                 let task = async move {
-                    let valid_hash_on_disk = {
+                    let valid_hash_on_disk = if skip_integrity_check {
+                        // When skipping integrity check, just verify file exists
+                        path.exists()
+                    } else {
                         let path = path.clone();
                         let permit = disk_semaphore.acquire().await.unwrap();
                         let result = tokio::task::spawn_blocking(move || {
@@ -1561,11 +1575,13 @@ async fn do_java_runtime_load(
                         Err(bytes) => bytes,
                     };
 
-                    if bytes.len() != downloads.raw.size as usize {
+                    if !skip_integrity_check && bytes.len() != downloads.raw.size as usize {
                         return Err(LoadJavaRuntimeError::WrongRawSize);
                     }
 
-                    let valid_hash = {
+                    let valid_hash = if skip_integrity_check {
+                        true
+                    } else {
                         let decompressed_or_raw = Arc::clone(&decompressed_or_raw);
                         tokio::task::spawn_blocking(move || {
                             let bytes = match &*decompressed_or_raw {
@@ -1673,6 +1689,7 @@ async fn do_asset_objects_load(
     assets_index: Arc<AssetsIndex>,
     assets_objects_dir: Arc<Path>,
     assets_tracker: &ProgressTracker,
+    skip_integrity_check: bool,
 ) -> Result<(), LoadAssetObjectsError> {
     // Limit max concurrent connections to 8 to avoid ratelimiting issues
     let download_semaphore = tokio::sync::Semaphore::new(8);
@@ -1704,7 +1721,10 @@ async fn do_asset_objects_load(
         let url = format!("https://resources.download.minecraft.net/{}/{}", &asset.hash[..2], &asset.hash);
 
         let task = async move {
-            let valid_hash_on_disk = {
+            let valid_hash_on_disk = if skip_integrity_check {
+                // When skipping integrity check, just verify file exists
+                path.exists()
+            } else {
                 let path = path.clone();
                 let permit = disk_semaphore.acquire().await.unwrap();
                 let result = tokio::task::spawn_blocking(move || {
@@ -1787,6 +1807,7 @@ async fn do_libraries_load(
     artifacts: &[GameLibraryArtifact],
     libraries_dir: Arc<Path>,
     libraries_tracker: &ProgressTracker,
+    skip_integrity_check: bool,
 ) -> Result<Vec<(Ustr, PathBuf)>, LoadLibrariesError> {
     // Limit max concurrent connections to 8 to avoid ratelimiting issues
     let download_semaphore = tokio::sync::Semaphore::new(8);
@@ -1828,7 +1849,10 @@ async fn do_libraries_load(
         let disk_semaphore = &disk_semaphore;
 
         let task = async move {
-            let valid_hash_on_disk = if let Some(expected_hash) = expected_hash {
+            let valid_hash_on_disk = if skip_integrity_check {
+                // When skipping integrity check, just verify file exists
+                artifact_path.exists()
+            } else if let Some(expected_hash) = expected_hash {
                 let artifact_path = artifact_path.clone();
                 let permit = disk_semaphore.acquire().await.unwrap();
                 let result = tokio::task::spawn_blocking(move || {
