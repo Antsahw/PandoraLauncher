@@ -264,18 +264,20 @@ impl TableDelegate for ServerList {
         _window: &mut Window,
         _cx: &mut Context<gpui_component::table::TableState<Self>>,
     ) {
-        if let Some(col) = self.columns.get_mut(col_ix) {
-            match col.key.as_ref() {
-                "name" => self.items.sort_by(|a, b| match sort {
+        match col_ix {
+            1 => {  // name column
+                self.items.sort_by(|a, b| match sort {
                     ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.name, &b.name).reverse(),
                     _ => lexical_sort::natural_lexical_cmp(&a.name, &b.name),
-                }),
-                "version" => self.items.sort_by(|a, b| match sort {
+                });
+            }
+            3 => {  // version column
+                self.items.sort_by(|a, b| match sort {
                     ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.version, &b.version).reverse(),
                     _ => lexical_sort::natural_lexical_cmp(&a.version, &b.version),
-                }),
-                _ => {},
+                });
             }
+            _ => {}
         }
     }
 

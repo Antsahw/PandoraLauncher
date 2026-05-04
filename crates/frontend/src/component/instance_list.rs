@@ -61,6 +61,7 @@ impl InstanceList {
                         .width(150.)
                         .fixed_left()
                         .resizable(true),
+                        
                 ],
                 items,
                 backend_handle: data.backend_handle.clone(),
@@ -168,18 +169,20 @@ impl TableDelegate for InstanceList {
         _window: &mut Window,
         _cx: &mut Context<TableState<Self>>,
     ) {
-        if let Some(col) = self.columns.get_mut(col_ix) {
-            match col.key.as_ref() {
-                "name" => self.items.sort_by(|a, b| match sort {
+        match col_ix {
+            1 => {  // name column
+                self.items.sort_by(|a, b| match sort {
                     ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.name, &b.name).reverse(),
                     _ => lexical_sort::natural_lexical_cmp(&a.name, &b.name),
-                }),
-                "version" => self.items.sort_by(|a, b| match sort {
+                });
+            }
+            2 => {  // version column
+                self.items.sort_by(|a, b| match sort {
                     ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.configuration.minecraft_version, &b.configuration.minecraft_version).reverse(),
                     _ => lexical_sort::natural_lexical_cmp(&a.configuration.minecraft_version, &b.configuration.minecraft_version),
-                }),
-                _ => {},
+                });
             }
+            _ => {}
         }
     }
 
