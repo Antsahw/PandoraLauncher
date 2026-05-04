@@ -7,7 +7,7 @@ use gpui_component::{
 use crate::{
     entity::{
         instance::{InstanceAddedEvent, InstanceEntry, InstanceModifiedEvent, InstanceRemovedEvent}, DataEntities
-    }, png_render_cache, ts, root, ui
+    }, modals::delete_instance::open_delete_instance, png_render_cache, ts, root, ui
 };
 
 pub struct InstanceList {
@@ -43,9 +43,10 @@ impl InstanceList {
             let instance_list = Self {
                 columns: vec![
                     Column::new("controls", "")
-                        .width(250.)
+                        .width(150.)
+                        .fixed_left()
                         .movable(false)
-                        .resizable(true),
+                        .resizable(false),
                     Column::new("name", ts!("instance.name"))
                         .width(150.)
                         .fixed_left()
@@ -90,7 +91,7 @@ impl InstanceList {
             Icon::default().path(icon_path).size_16().min_w_16().min_h_16().into_any_element()
         };
 
-        let play_button = render_play_button(item, self.backend_handle.clone());
+        let play_button = render_play_button(item, index, self.backend_handle.clone());
 
         let theme = cx.theme();
         v_flex()
@@ -133,6 +134,14 @@ impl InstanceList {
                                 .join(".minecraft");
                             crate::open_folder(&path, window, cx);
                         }
+                    }
+                }))
+                .child(Button::new(("delete", index)).flex_1().small().info().icon(crate::icon::PandoraIcon::Trash2).on_click({
+                    let id = item.id;
+                    let name = item.name.clone();
+                    let backend_handle = self.backend_handle.clone();
+                    move |_, window, cx| {
+                        open_delete_instance(id, name.clone(), backend_handle.clone(), window, cx);
                     }
                 })))
 
@@ -181,37 +190,20 @@ impl TableDelegate for InstanceList {
                 "name" => item.name.clone().into_any_element(),
                 "version" => item.configuration.minecraft_version.as_str().into_any_element(),
                 "controls" => {
-                    let play_button = render_play_button(item, self.backend_handle.clone());
-
-                    let open_folder_button = Button::new(("open_folder", row_ix))
-                        .info()
-                        .small()
-                        .icon(crate::icon::PandoraIcon::Folder)
-                        .on_click({
-                            let name = item.name.clone();
-                            move |_, window, cx| {
-                                let home = std::env::var("HOME").ok();
-                                if let Some(home_dir) = home {
-                                    let path = std::path::PathBuf::from(home_dir)
-                                        .join(".local/share/PandoraLauncher/instances")
-                                        .join(name.as_str())
-                                        .join(".minecraft");
-                                    crate::open_folder(&path, window, cx);
-                                }
-                            }
-                        });
+                    let play_button = render_play_button(item, row_ix, self.backend_handle.clone());
 
                     h_flex()
+                        .size_full()
                         .gap_2()
-                        .child(play_button.small())
-                        .child(Button::new("view").small().info().label(ts!("instance.view")).on_click({
+                        .border_r_4()
+                        .child(play_button.w_1_2().small())
+                        .child(Button::new("view").w_1_2().small().info().label(ts!("instance.view")).on_click({
                             let name = item.name.clone();
                             move |_, window, cx| {
                                 root::switch_page(ui::PageType::InstancePage { name: name.clone() },
                                     &[ui::PageType::Instances], window, cx);
                             }
                         }))
-                        .child(open_folder_button.small())
                         .into_any_element()
                 },
                 "loader" => item.configuration.loader.name().into_any_element(),
@@ -223,12 +215,12 @@ impl TableDelegate for InstanceList {
     }
 }
 
-fn render_play_button(item: &InstanceEntry, backend_handle: BackendHandle) -> Button {
+fn render_play_button(item: &InstanceEntry, index: usize, backend_handle: BackendHandle) -> Button {
     let name = item.name.clone();
     let id = item.id;
     match item.status {
         InstanceStatus::NotRunning => {
-            Button::new("start_instance")
+            Button::new(("start_instance", index))
                 .success()
                 .label(ts!("instance.start.label"))
                 .on_click(
@@ -238,12 +230,12 @@ fn render_play_button(item: &InstanceEntry, backend_handle: BackendHandle) -> Bu
             )
         },
         InstanceStatus::Launching => {
-            Button::new("launching")
+            Button::new(("launching", index))
                 .warning()
                 .label("...")
         },
         InstanceStatus::Running => {
-            Button::new("kill_instance")
+            Button::new(("kill_instance", index))
                 .danger()
                 .label(ts!("instance.kill"))
                 .on_click({

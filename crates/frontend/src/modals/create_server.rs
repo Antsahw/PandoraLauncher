@@ -427,7 +427,7 @@ impl CreateServerModalState {
                     .w_full()
                     .child(Button::new("cancel").flex_1().label(ts!("common.cancel"))
                         .on_click(|_, window, cx| window.close_dialog(cx)))
-                    .child(Button::new("ok").flex_1().label(ts!("common.create"))
+                    .child(Button::new("ok").flex_1().label(ts!("common.ok"))
                         .on_click(cx.listener(move |this, _, window: &mut Window, cx| {
                             if name_is_invalid || !this.loaded_versions {
                                 return;

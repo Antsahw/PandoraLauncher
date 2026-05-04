@@ -3,8 +3,8 @@ use bridge::handle::BackendHandle;
 use bridge::message::MessageToBackend;
 use bridge::modal_action::ModalAction;
 use gpui::{prelude::*, *};
-use gpui_component::{button::{Button, ButtonVariants}, h_flex, v_flex, table::{Column, TableDelegate}, Sizable, ActiveTheme};
-use crate::{icon::PandoraIcon, root, ts, ui};
+use gpui_component::{button::{Button, ButtonVariants}, h_flex, v_flex, table::{Column, ColumnSort, TableDelegate}, Sizable, ActiveTheme};
+use crate::{icon::PandoraIcon, modals::delete_server::open_delete_server, root, ts, ui};
 
 #[derive(Clone, Debug)]
 pub struct ServerEntry {
@@ -24,6 +24,7 @@ pub enum ServerStatus {
 
 pub struct ServerList {
     pub items: Vec<ServerEntry>,
+    columns: Vec<Column>,
     backend_handle: BackendHandle,
 }
 
@@ -31,6 +32,12 @@ impl ServerList {
     pub fn new(items: Vec<ServerEntry>, backend_handle: BackendHandle) -> Self {
         Self {
             items,
+            columns: vec![
+                Column::new("controls", "").width(200.).resizable(true).movable(false),
+                Column::new("name", "Name").width(150.).fixed_left().sortable().resizable(true).movable(false),
+                Column::new("software", "Software").width(100.).fixed_left().resizable(true).movable(false),
+                Column::new("version", "Version").width(120.).fixed_left().sortable().resizable(true).movable(false),
+            ],
             backend_handle,
         }
     }
@@ -113,10 +120,7 @@ impl ServerList {
         }
 
         cx.new(|cx| {
-            let server_list = Self {
-                items,
-                backend_handle: data.backend_handle.clone(),
-            };
+            let server_list = Self::new(items, data.backend_handle.clone());
             gpui_component::table::TableState::new(server_list, window, cx)
         })
     }
@@ -222,6 +226,19 @@ impl ServerList {
                 .child(status_button.flex_1())
                 .child(view_button.flex_1())
                 .child(open_folder_button.flex_1())
+                .child(Button::new(("delete", index))
+                    .flex_1()
+                    .small()
+                    .info()
+                    .icon(PandoraIcon::Trash2)
+                    .on_click({
+                        let backend_handle = self.backend_handle.clone();
+                        let server_name = item.name.clone();
+                        move |_, window, cx| {
+                            open_delete_server(server_name.clone(), backend_handle.clone(), window, cx);
+                        }
+                    })
+                )
             )
     }
 
@@ -229,7 +246,7 @@ impl ServerList {
 
 impl TableDelegate for ServerList {
     fn columns_count(&self, _cx: &App) -> usize {
-        4
+        self.columns.len()
     }
 
     fn rows_count(&self, _cx: &App) -> usize {
@@ -237,12 +254,28 @@ impl TableDelegate for ServerList {
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> Column {
-        match col_ix {
-            0 => Column::new("controls", "").width(250.).resizable(true).movable(false),
-            1 => Column::new("name", "Name").width(150.).fixed_left().sortable().resizable(true),
-            2 => Column::new("software", "Software").width(100.).fixed_left().resizable(true),
-            3 => Column::new("version", "Version").width(120.).fixed_left().sortable().resizable(true),
-            _ => Column::new("unknown", "").width(100.),
+        self.columns[col_ix].clone()
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        _cx: &mut Context<gpui_component::table::TableState<Self>>,
+    ) {
+        if let Some(col) = self.columns.get_mut(col_ix) {
+            match col.key.as_ref() {
+                "name" => self.items.sort_by(|a, b| match sort {
+                    ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.name, &b.name).reverse(),
+                    _ => lexical_sort::natural_lexical_cmp(&a.name, &b.name),
+                }),
+                "version" => self.items.sort_by(|a, b| match sort {
+                    ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.version, &b.version).reverse(),
+                    _ => lexical_sort::natural_lexical_cmp(&a.version, &b.version),
+                }),
+                _ => {},
+            }
         }
     }
 
@@ -319,17 +352,39 @@ impl TableDelegate for ServerList {
                         }
                     });
 
+                let delete_button = Button::new(format!("delete_server_{}", item.name))
+                    .small()
+                    .info()
+                    .icon(PandoraIcon::Trash2)
+                    .on_click({
+                        let backend_handle = self.backend_handle.clone();
+                        let server_name = item.name.clone();
+                        move |_, window, cx| {
+                            open_delete_server(server_name.clone(), backend_handle.clone(), window, cx);
+                        }
+                    });
+
                 h_flex()
                     .gap_2()
                     .child(status_button.small())
                     .child(view_button.small())
                     .child(open_folder_button.small())
+                    .child(delete_button.small())
                     .into_any_element()
             }
-            1 => div().child(item.name.clone()).into_any_element(),
+            1 => {
+                h_flex()
+                    .size_full()
+                    .items_center()
+                    .border_r_4()
+                    .px_2()
+                    .child(item.name.clone())
+                    .into_any_element()
+            },
             2 => div().child(item.software.clone()).into_any_element(),
             3 => div().child(item.version.clone()).into_any_element(),
             _ => div().into_any_element(),
         }
     }
 }
+

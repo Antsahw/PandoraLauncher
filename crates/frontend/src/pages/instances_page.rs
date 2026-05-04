@@ -60,7 +60,7 @@ impl Page for InstancesPage {
                 crate::modals::create_instance::open_create_instance(this.metadata.clone(), this.instances.clone(),
                     this.backend_handle.clone(), window, cx);
             }));
-        let select_view = Select::new(&self.view_dropdown).title_prefix(format!("{}: ", ts!("instance.view")));
+        let select_view = Select::new(&self.view_dropdown).title_prefix(format!("{}: ", ts!("instance.view"))).w(px(200.));
 
         h_flex().gap_3().child(create_instance).child(select_view)
     }
@@ -90,7 +90,7 @@ impl Render for InstancesPage {
                 div().p_4().child(ResponsiveGrid::new(size).size_full().gap_4().children(cards)).into_any_element()
             },
             InstancesViewMode::List => {
-                DataTable::new(&self.instance_table).bordered(false).into_any_element()
+                DataTable::new(&self.instance_table).bordered(true).into_any_element()
             },
         }
     }

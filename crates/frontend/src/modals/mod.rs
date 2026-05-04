@@ -2,6 +2,7 @@ pub mod create_instance;
 pub mod create_server;
 pub mod curseforge_install;
 pub mod delete_instance;
+pub mod delete_server;
 pub mod generic;
 pub mod modrinth_install;
 pub mod select_icon;

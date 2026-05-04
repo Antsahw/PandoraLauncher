@@ -69,6 +69,7 @@ impl Page for ServersPage {
             }));
 
         let select_view = div()
+            .w(px(200.))
             .child(Select::new(&self.view_dropdown).title_prefix(format!("{}: ", ts!("instance.view"))));
 
         h_flex().gap_3().child(create_server).child(select_view)
@@ -104,7 +105,7 @@ impl Render for ServersPage {
                 div().p_4().child(ResponsiveGrid::new(size).size_full().gap_4().children(cards)).into_any_element()
             },
             ServersViewMode::List => {
-                DataTable::new(&self.server_table).bordered(false).into_any_element()
+                DataTable::new(&self.server_table).bordered(true).into_any_element()
             },
         }
     }
