@@ -8,6 +8,7 @@ use schema::backend_config::JavaRuntime;
 /// 2. If instance_runtime.runtime_name is "system", use system Java
 /// 3. Use global default runtime from backend config
 /// 4. Fall back to system Java if nothing configured
+#[allow(dead_code)]
 pub fn resolve_java_path(
     instance_runtime_name: Option<&str>,
     instance_runtime_enabled: bool,
@@ -54,6 +55,7 @@ fn get_system_java() -> PathBuf {
 }
 
 /// Validates that a Java runtime exists and is executable
+#[allow(dead_code)]
 pub fn validate_java_runtime(path: &str) -> bool {
     let path = PathBuf::from(path);
     path.exists() && path.is_file()
@@ -62,6 +64,7 @@ pub fn validate_java_runtime(path: &str) -> bool {
 /// Detects installed Java runtimes on the system
 /// 
 /// This searches common installation paths and returns available runtimes
+#[allow(dead_code)]
 pub fn detect_java_runtimes() -> BTreeMap<String, JavaRuntime> {
     let mut runtimes = BTreeMap::new();
 
@@ -120,6 +123,7 @@ pub fn detect_java_runtimes() -> BTreeMap<String, JavaRuntime> {
 }
 
 /// Finds java binary in a directory (recursively searches bin/)
+#[allow(dead_code)]
 fn find_java_binary(dir: &std::path::Path) -> Option<PathBuf> {
     // Look for bin/java or bin/java.exe
     let bin_dir = dir.join("bin");
@@ -144,6 +148,7 @@ fn find_java_binary(dir: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// Creates a JavaRuntime from a java binary path by detecting version
+#[allow(dead_code)]
 fn create_runtime_from_path(java_path: &std::path::Path) -> Option<JavaRuntime> {
     // Try to get version from `java -version`
     if let Ok(output) = std::process::Command::new(java_path)
@@ -166,6 +171,7 @@ fn create_runtime_from_path(java_path: &std::path::Path) -> Option<JavaRuntime> 
 }
 
 /// Parses Java version from `java -version` output
+#[allow(dead_code)]
 fn parse_java_version(version_str: &str) -> Option<u32> {
     // Parse version like:
     // "openjdk version \"21.0.1\" 2023-10-17"

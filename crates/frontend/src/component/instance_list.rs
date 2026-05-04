@@ -7,7 +7,7 @@ use gpui_component::{
 use crate::{
     entity::{
         instance::{InstanceAddedEvent, InstanceEntry, InstanceModifiedEvent, InstanceRemovedEvent}, DataEntities
-    }, modals::delete_instance::open_delete_instance, png_render_cache, ts, root, ui
+    }, modals::delete_instance::open_delete_instance, png_render_cache, ts, root, ui, icon::PandoraIcon
 };
 
 pub struct InstanceList {
@@ -43,24 +43,27 @@ impl InstanceList {
             let instance_list = Self {
                 columns: vec![
                     Column::new("controls", "")
-                        .width(150.)
+                        .width(200.)
                         .fixed_left()
                         .movable(false)
-                        .resizable(false),
+                        .resizable(true),
                     Column::new("name", ts!("instance.name"))
                         .width(150.)
                         .fixed_left()
                         .sortable()
-                        .resizable(true),
+                        .resizable(true)
+                        .movable(false),
                     Column::new("version", ts!("instance.version"))
                         .width(150.)
                         .fixed_left()
                         .sortable()
-                        .resizable(true),
+                        .resizable(true)
+                        .movable(false),
                     Column::new("loader", ts!("instance.modloader"))
                         .width(150.)
                         .fixed_left()
-                        .resizable(true),
+                        .resizable(true)
+                        .movable(false),
                         
                 ],
                 items,
@@ -116,15 +119,15 @@ impl InstanceList {
                 )
             ).child(h_flex()
                 .gap_2()
-                .child(play_button.flex_1().small())
-                .child(Button::new(("view", index)).flex_1().small().info().label(ts!("instance.view")).on_click({
+                .child(play_button.flex_1())
+                .child(Button::new(("view", index)).flex_1().small().info().icon(PandoraIcon::Eye).label(ts!("instance.view")).on_click({
                     let name = item.name.clone();
                     move |_, window, cx| {
                         root::switch_page(ui::PageType::InstancePage { name: name.clone() },
                             &[ui::PageType::Instances], window, cx);
                     }
                 }))
-                .child(Button::new(("open_folder", index)).flex_1().small().info().icon(crate::icon::PandoraIcon::FolderOpen).on_click({
+                .child(Button::new(("open_folder", index)).flex_1().small().info().icon(PandoraIcon::FolderOpen).on_click({
                     let name = item.name.clone();
                     move |_, window, cx| {
                         let home = std::env::var("HOME").ok();
@@ -137,7 +140,7 @@ impl InstanceList {
                         }
                     }
                 }))
-                .child(Button::new(("delete", index)).flex_1().small().info().icon(crate::icon::PandoraIcon::Trash2).on_click({
+                .child(Button::new(("delete", index)).flex_1().small().info().icon(PandoraIcon::Trash2).on_click({
                     let id = item.id;
                     let name = item.name.clone();
                     let backend_handle = self.backend_handle.clone();
@@ -167,58 +170,37 @@ impl TableDelegate for InstanceList {
         col_ix: usize,
         sort: gpui_component::table::ColumnSort,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) {
-        match col_ix {
-            1 => {  // name column
-                self.items.sort_by(|a, b| match sort {
+        if let Some(col) = self.columns.get_mut(col_ix) {
+            match col.key.as_ref() {
+                "name" => self.items.sort_by(|a, b| match sort {
                     ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.name, &b.name).reverse(),
                     _ => lexical_sort::natural_lexical_cmp(&a.name, &b.name),
-                });
-            }
-            2 => {  // version column
-                self.items.sort_by(|a, b| match sort {
+                }),
+                "version" => self.items.sort_by(|a, b| match sort {
                     ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.configuration.minecraft_version, &b.configuration.minecraft_version).reverse(),
                     _ => lexical_sort::natural_lexical_cmp(&a.configuration.minecraft_version, &b.configuration.minecraft_version),
-                });
+                }),
+                _ => {},
             }
-            _ => {}
         }
+        cx.notify();
     }
 
     fn render_td(&mut self, row_ix: usize, col_ix: usize, _window: &mut Window, _cx: &mut Context<TableState<Self>>) -> impl IntoElement {
         let item = &self.items[row_ix];
         if let Some(col) = self.columns.get(col_ix) {
             match col.key.as_ref() {
-                "name" => {
-                    h_flex()
-                        .size_full()
-                        .items_center()
-                        .border_r_4()
-                        .px_2()
-                        .child(item.name.clone())
-                        .into_any_element()
-                },
+                "name" => item.name.clone().into_any_element(),
                 "version" => item.configuration.minecraft_version.as_str().into_any_element(),
                 "controls" => {
                     let play_button = render_play_button(item, row_ix, self.backend_handle.clone());
 
-                    let view_button = Button::new(("view", row_ix))
-                        .small()
-                        .info()
-                        .label(ts!("instance.view"))
-                        .on_click({
-                            let name = item.name.clone();
-                            move |_, window, cx| {
-                                root::switch_page(ui::PageType::InstancePage { name: name.clone() },
-                                    &[ui::PageType::Instances], window, cx);
-                            }
-                        });
-
                     let open_folder_button = Button::new(("open_folder", row_ix))
                         .info()
                         .small()
-                        .icon(crate::icon::PandoraIcon::Folder)
+                        .icon(PandoraIcon::Folder)
                         .on_click({
                             let name = item.name.clone();
                             move |_, window, cx| {
@@ -234,9 +216,9 @@ impl TableDelegate for InstanceList {
                         });
 
                     let delete_button = Button::new(("delete", row_ix))
-                        .small()
                         .info()
-                        .icon(crate::icon::PandoraIcon::Trash2)
+                        .small()
+                        .icon(PandoraIcon::Trash2)
                         .on_click({
                             let id = item.id;
                             let name = item.name.clone();
@@ -248,13 +230,26 @@ impl TableDelegate for InstanceList {
 
                     h_flex()
                         .gap_2()
+                        .size_full()
+                        .px_2()
                         .child(play_button.small())
-                        .child(view_button.small())
+                        .child(Button::new(("view", row_ix)).small().info().label(ts!("instance.view")).on_click({
+                            let name = item.name.clone();
+                            move |_, window, cx| {
+                                root::switch_page(ui::PageType::InstancePage { name: name.clone() },
+                                    &[ui::PageType::Instances], window, cx);
+                            }
+                        }))
                         .child(open_folder_button.small())
                         .child(delete_button.small())
                         .into_any_element()
                 },
-                "loader" => item.configuration.loader.name().into_any_element(),
+                "loader" => h_flex()
+                    .size_full()
+                    .border_r_4()
+                    .px_2()
+                    .child(item.configuration.loader.name())
+                    .into_any_element(),
                 _ => ts!("common.unknown").into_any_element(),
             }
         } else {
@@ -270,6 +265,7 @@ fn render_play_button(item: &InstanceEntry, index: usize, backend_handle: Backen
         InstanceStatus::NotRunning => {
             Button::new(("start_instance", index))
                 .success()
+                .small()
                 .label(ts!("instance.start.label"))
                 .on_click(
                 move |_, window, cx| {
@@ -280,11 +276,13 @@ fn render_play_button(item: &InstanceEntry, index: usize, backend_handle: Backen
         InstanceStatus::Launching => {
             Button::new(("launching", index))
                 .warning()
+                .small()
                 .label("...")
         },
         InstanceStatus::Running => {
             Button::new(("kill_instance", index))
                 .danger()
+                .small()
                 .label(ts!("instance.kill"))
                 .on_click({
                     let backend_handle = backend_handle.clone();

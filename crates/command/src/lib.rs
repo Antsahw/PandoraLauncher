@@ -1,6 +1,6 @@
 #![deny(unused_must_use)]
 
-use std::{ffi::OsStr, path::Path, sync::Arc};
+use std::{ffi::OsStr, path::Path};
 
 #[cfg(target_os = "linux")]
 mod linux;

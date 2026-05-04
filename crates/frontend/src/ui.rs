@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bridge::{instance::InstanceID, message::MessageToBackend};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme as _, Disableable, Icon, InteractiveElementExt, WindowExt, button::{Button, ButtonVariants}, h_flex, input::{Input, InputState}, notification::{Notification, NotificationType}, scroll::ScrollableElement, tooltip::Tooltip, v_flex
+    ActiveTheme as _, Disableable, Icon, InteractiveElementExt, WindowExt, button::{Button, ButtonVariants}, h_flex, input::{Input, InputState}, notification::{Notification, NotificationType}, scroll::ScrollableElement, v_flex
 };
 use rand::Rng;
 use rustc_hash::FxHashMap;
@@ -617,6 +617,7 @@ impl Render for LauncherUI {
     }
 }
 
+#[allow(dead_code)]
 fn open_bug_report_url(window: &mut Window, cx: &mut App) {
     let mut body = String::from(r#"## Description of bug
 (Write here)

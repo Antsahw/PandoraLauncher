@@ -58,21 +58,6 @@ impl Page for ServerPage {
                     }),
             )
             .child(
-                Button::new("kill_server")
-                    .danger()
-                    .icon(PandoraIcon::Close)
-                    .label(ts!("instance.kill_instance"))
-                    .on_click({
-                        let backend_handle = backend_handle.clone();
-                        let _server_name = server_name.clone();
-                        move |_, _, _| {
-                            let _ = backend_handle.send(bridge::message::MessageToBackend::StopServer {
-                                name: _server_name.as_str().into(),
-                            });
-                        }
-                    }),
-            )
-            .child(
                 Button::new("rename_server")
                     .label("Rename")
                     .on_click({
@@ -91,7 +76,6 @@ impl Page for ServerPage {
             )
             .child(
                 Button::new("delete_server")
-                    .danger()
                     .icon(PandoraIcon::Close)
                     .label("Delete")
                     .on_click({

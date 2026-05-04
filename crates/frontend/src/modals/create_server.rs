@@ -402,7 +402,6 @@ impl CreateServerModalState {
             .child(crate::labelled(ts!("instance.version"), v_flex().gap_2().child(version_dropdown).child(show_snapshots_button)))
             .child(crate::labelled("Server Software", v_flex().gap_2()
                 .child(loader_button_group)
-                .child(div().text_xs().text_color(gpui::rgb(0x888888)).child("Note: Some versions may not be available for all server software types."))
             ))
             .child(h_flex().child(Button::new("icon").icon(PandoraIcon::Plus).label(ts!("instance.select_icon")).on_click({
                 let entity = cx.entity();

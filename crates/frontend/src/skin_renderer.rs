@@ -908,6 +908,7 @@ pub fn render_skin_3d(
 }
 
 // Constants calculated by brute force
+#[allow(dead_code)]
 const MAX_CAPE_ANGLE_SWAY_PROGRESS: f64 = 3.0/4.0;
 const MAX_WIDTH_AT_ANY_ANGLE: f64 = 20.407198535851574; // yaw=60.65789523301863, pitch=0
 const MAX_HEIGHT_AT_ANY_ANGLE: f64 = 34.65183977799737; // yaw=45, pitch=20.29798422703834

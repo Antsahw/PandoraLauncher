@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, path::{Path, PathBuf}, sync::Arc};
+use std::{ffi::OsStr, path::Path, sync::Arc};
 
 pub fn get_command_path(command: &OsStr) -> Option<Arc<Path>> {
     if let Ok(path_var) = std::env::var("PATH") {

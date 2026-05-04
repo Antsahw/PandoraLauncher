@@ -317,7 +317,7 @@ impl Render for SkinsPage {
             }
 
             // Sync the player model widget with active skin if still showing default
-            if let Some(skin) = &active_skin {
+            if let Some(_skin) = &active_skin {
                 if !Arc::ptr_eq(&self.selected_skin, &DEFAULT_SKIN) {
                     self.player_model_widget.update(cx, |widget, cx| {
                         widget.set_skin(cx, self.selected_skin.clone());

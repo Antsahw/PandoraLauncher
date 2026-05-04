@@ -212,6 +212,7 @@ fn get_runtime_path(java_config: &JavaRuntimesConfig, runtime_name: &str) -> Opt
 }
 
 /// Validate that a Java executable is working
+#[allow(dead_code)]
 pub fn validate_java_executable(java_path: &Path) -> bool {
     match std::process::Command::new(java_path)
         .arg("-version")

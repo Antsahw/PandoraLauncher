@@ -33,10 +33,10 @@ impl ServerList {
         Self {
             items,
             columns: vec![
-                Column::new("controls", "").width(200.).resizable(true).movable(false),
+                Column::new("controls", "").width(200.).fixed_left().resizable(true).movable(false),
                 Column::new("name", "Name").width(150.).fixed_left().sortable().resizable(true).movable(false),
-                Column::new("software", "Software").width(100.).fixed_left().resizable(true).movable(false),
                 Column::new("version", "Version").width(120.).fixed_left().sortable().resizable(true).movable(false),
+                Column::new("software", "Software").width(100.).fixed_left().resizable(true).movable(false),
             ],
             backend_handle,
         }
@@ -262,130 +262,132 @@ impl TableDelegate for ServerList {
         col_ix: usize,
         sort: ColumnSort,
         _window: &mut Window,
-        _cx: &mut Context<gpui_component::table::TableState<Self>>,
+        cx: &mut Context<gpui_component::table::TableState<Self>>,
     ) {
-        match col_ix {
-            1 => {  // name column
-                self.items.sort_by(|a, b| match sort {
+        if let Some(col) = self.columns.get_mut(col_ix) {
+            match col.key.as_ref() {
+                "name" => self.items.sort_by(|a, b| match sort {
                     ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.name, &b.name).reverse(),
                     _ => lexical_sort::natural_lexical_cmp(&a.name, &b.name),
-                });
-            }
-            3 => {  // version column
-                self.items.sort_by(|a, b| match sort {
+                }),
+                "version" => self.items.sort_by(|a, b| match sort {
                     ColumnSort::Descending => lexical_sort::natural_lexical_cmp(&a.version, &b.version).reverse(),
                     _ => lexical_sort::natural_lexical_cmp(&a.version, &b.version),
-                });
+                }),
+                _ => {}
             }
-            _ => {}
         }
+        cx.notify();
     }
 
     fn render_td(&mut self, row_ix: usize, col_ix: usize, _window: &mut Window, _cx: &mut Context<gpui_component::table::TableState<Self>>) -> impl IntoElement {
         let item = &mut self.items[row_ix];
 
-        match col_ix {
-            0 => {
-                let status_button = match item.status {
-                    ServerStatus::Stopped => {
-                        Button::new(format!("start_server_{}", item.name))
-                            .success()
-                            .small()
-                            .label("Start")
-                            .on_click({
-                                let name = item.name.clone();
-                                let backend_handle = self.backend_handle.clone();
-                                move |_, _, _| {
-                                    // Send start command to backend
-                                    backend_handle.send(MessageToBackend::StartServer {
-                                        name: name.as_str().into(),
-                                        modal_action: ModalAction::default(),
-                                    });
-                                }
-                            })
-                    },
-                    ServerStatus::Starting => {
-                        Button::new(format!("launching_server_{}", item.name))
-                            .small()
-                            .label("Starting...")
-                    },
-                    ServerStatus::Running => {
-                        Button::new(format!("stop_server_{}", item.name))
-                            .danger()
-                            .small()
-                            .label("Stop")
-                            .on_click({
-                                let name = item.name.clone();
-                                let backend_handle = self.backend_handle.clone();
-                                move |_, _, _| {
-                                    // Send stop command to backend
-                                    backend_handle.send(MessageToBackend::StopServer {
-                                        name: name.as_str().into(),
-                                    });
-                                }
-                            })
-                    },
-                };
+        if let Some(col) = self.columns.get(col_ix) {
+            match col.key.as_ref() {
+                "controls" => {
+                    let status_button = match item.status {
+                        ServerStatus::Stopped => {
+                            Button::new(format!("start_server_{}", item.name))
+                                .success()
+                                .small()
+                                .label("Start")
+                                .on_click({
+                                    let name = item.name.clone();
+                                    let backend_handle = self.backend_handle.clone();
+                                    move |_, _, _| {
+                                        // Send start command to backend
+                                        backend_handle.send(MessageToBackend::StartServer {
+                                            name: name.as_str().into(),
+                                            modal_action: ModalAction::default(),
+                                        });
+                                    }
+                                })
+                        },
+                        ServerStatus::Starting => {
+                            Button::new(format!("launching_server_{}", item.name))
+                                .small()
+                                .label("Starting...")
+                        },
+                        ServerStatus::Running => {
+                            Button::new(format!("stop_server_{}", item.name))
+                                .danger()
+                                .small()
+                                .label("Stop")
+                                .on_click({
+                                    let name = item.name.clone();
+                                    let backend_handle = self.backend_handle.clone();
+                                    move |_, _, _| {
+                                        // Send stop command to backend
+                                        backend_handle.send(MessageToBackend::StopServer {
+                                            name: name.as_str().into(),
+                                        });
+                                    }
+                                })
+                        },
+                    };
 
-                let view_button = Button::new(format!("view_server_{}", item.name))
-                    .info()
-                    .small()
-                    .label(ts!("instance.view"))
-                    .on_click({
-                        let name = item.name.clone();
-                        move |_, window, cx| {
-                            root::switch_page(
-                                ui::PageType::ServerPage { name: name.clone() },
-                                &[ui::PageType::Servers],
-                                window,
-                                cx,
-                            );
-                        }
-                    });
+                    let view_button = Button::new(format!("view_server_{}", item.name))
+                        .info()
+                        .small()
+                        .label(ts!("instance.view"))
+                        .on_click({
+                            let name = item.name.clone();
+                            move |_, window, cx| {
+                                root::switch_page(
+                                    ui::PageType::ServerPage { name: name.clone() },
+                                    &[ui::PageType::Servers],
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
 
-                let open_folder_button = Button::new(format!("open_folder_{}", item.name))
-                    .info()
-                    .small()
-                    .icon(PandoraIcon::Folder)
-                    .on_click({
-                        let path = item.path.clone();
-                        move |_, window, cx| {
-                            crate::open_folder(&path, window, cx);
-                        }
-                    });
+                    let open_folder_button = Button::new(format!("open_folder_{}", item.name))
+                        .info()
+                        .small()
+                        .icon(PandoraIcon::Folder)
+                        .on_click({
+                            let path = item.path.clone();
+                            move |_, window, cx| {
+                                crate::open_folder(&path, window, cx);
+                            }
+                        });
 
-                let delete_button = Button::new(format!("delete_server_{}", item.name))
-                    .small()
-                    .info()
-                    .icon(PandoraIcon::Trash2)
-                    .on_click({
-                        let backend_handle = self.backend_handle.clone();
-                        let server_name = item.name.clone();
-                        move |_, window, cx| {
-                            open_delete_server(server_name.clone(), backend_handle.clone(), window, cx);
-                        }
-                    });
+                    let delete_button = Button::new(format!("delete_server_{}", item.name))
+                        .small()
+                        .info()
+                        .icon(PandoraIcon::Trash2)
+                        .on_click({
+                            let backend_handle = self.backend_handle.clone();
+                            let server_name = item.name.clone();
+                            move |_, window, cx| {
+                                open_delete_server(server_name.clone(), backend_handle.clone(), window, cx);
+                            }
+                        });
 
-                h_flex()
-                    .gap_2()
-                    .child(status_button.small())
-                    .child(view_button.small())
-                    .child(open_folder_button.small())
-                    .child(delete_button.small())
-                    .into_any_element()
-            }
-            1 => {
-                h_flex()
+                    h_flex()
+                        .gap_2()
+                        .size_full()
+                        .px_2()
+                        .child(status_button.small())
+                        .child(view_button.small())
+                        .child(open_folder_button.small())
+                        .child(delete_button.small())
+                        .into_any_element()
+                },
+                "name" => item.name.clone().into_any_element(),
+                "version" => item.version.clone().into_any_element(),
+                "software" => h_flex()
                     .size_full()
-                    .items_center()
                     .border_r_4()
                     .px_2()
-                    .child(item.name.clone())
-                    .into_any_element()
-            },
-            2 => div().child(item.software.clone()).into_any_element(),
-            3 => div().child(item.version.clone()).into_any_element(),
-            _ => div().into_any_element(),
+                    .child(item.software.clone())
+                    .into_any_element(),
+                _ => div().into_any_element(),
+            }
+        } else {
+            div().into_any_element()
         }
     }
 }
