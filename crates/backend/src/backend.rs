@@ -159,6 +159,7 @@ pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHa
         skin_manager: Default::default(),
         server_processes: Arc::new(RwLock::new(HashMap::new())),
         server_game_output_ids: Arc::new(RwLock::new(HashMap::new())),
+        server_start_times: Arc::new(RwLock::new(HashMap::new())),
     };
 
     log::debug!("Doing initial backend load");
@@ -218,6 +219,7 @@ pub struct BackendState {
     pub skin_manager: Arc<RwLock<SkinManager>>,
     pub server_processes: Arc<RwLock<HashMap<String, std::process::Child>>>,
     pub server_game_output_ids: Arc<RwLock<HashMap<String, usize>>>,
+    pub server_start_times: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
 pub struct CachedMinecraftProfile {
@@ -445,6 +447,31 @@ impl BackendState {
                     true
                 } else {
                     log::debug!("Child process {} is no longer alive", child.id());
+                    
+                    // Update playtime stats for naturally exited process
+                    if let Some(session_start) = instance.session_started_at {
+                        let session_duration = session_start.elapsed().as_secs();
+                        let mut stats = instance.stats.get().clone();
+                        stats.total_playtime_secs += session_duration;
+                        stats.session_count += 1;
+                        stats.last_played_unix_ms = Some(std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0));
+                        instance.stats.set(stats.clone());
+                        instance.session_started_at = None;
+                        
+                        // Send playtime update to frontend
+                        self.send.send(bridge::message::MessageToFrontend::InstancePlaytimeUpdated {
+                            id: instance.id,
+                            playtime: bridge::instance::InstancePlaytime {
+                                total_secs: stats.total_playtime_secs,
+                                current_session_secs: 0,
+                                last_played_unix_ms: stats.last_played_unix_ms,
+                            },
+                        });
+                    }
+                    
                     changed = true;
                     false
                 }
@@ -1221,8 +1248,25 @@ impl BackendState {
             self.send.send_warning(format!("Unable to create server, name is invalid: {}", name));
             return None;
         }
+        // Check if a server with this name already exists (on disk or in instance state)
+        let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+            PathBuf::from(dir)
+        } else {
+            let base_dirs = directories::BaseDirs::new().unwrap();
+            let data_dir = base_dirs.data_dir();
+            data_dir.join("PandoraLauncher")
+        };
+        let servers_dir = pandora_dir.join("servers");
+        
+        // First check instance state
         if self.instance_state.read().instances.iter().any(|i| i.name == name) {
-            self.send.send_warning("Unable to create server, name is already used".to_string());
+            self.send.send_warning(format!("Unable to create server, name '{}' is already used by an instance", name));
+            return None;
+        }
+        
+        // Then check if directory exists on disk
+        if servers_dir.join(name).exists() {
+            self.send.send_warning(format!("Unable to create server, a server named '{}' already exists", name));
             return None;
         }
 
@@ -1252,6 +1296,15 @@ impl BackendState {
 
         let metadata_path = server_dir.join("server_metadata.json");
         crate::write_safe(&metadata_path, serde_json::to_string_pretty(&server_metadata).unwrap().as_bytes()).unwrap();
+
+        // Initialize server stats file
+        let server_stats = schema::server_config::ServerStats {
+            total_uptime_secs: 0,
+            start_count: 0,
+            last_started_unix_ms: None,
+        };
+        let stats_path = server_dir.join("stats.json");
+        crate::write_safe(&stats_path, serde_json::to_string_pretty(&server_stats).unwrap().as_bytes()).unwrap();
 
         // Create eula.txt (required for server to run)
         let eula_path = server_dir.join("eula.txt");
@@ -1809,21 +1862,32 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
                                                                                                     .output();
                                                                                                 
                                                                                                 match output {
-                                                                                                    Ok(output) if output.status.success() => {
-                                                                                                        // Clean up installer jar
-                                                                                                        let _ = tokio::fs::remove_file(&installer_path).await;
-                                                                                                        tracker.set_title(Arc::from(format!("✓ Fabric {} server installed successfully", version).as_str()));
-                                                                                                        tracker.set_finished(ProgressTrackerFinishType::Normal);
-                                                                                                        tracker.notify();
-                                                                                                        sender.send(MessageToFrontend::ServerAdded {
-                                                                                                            name: name.into(),
-                                                                                                            software: "Fabric".into(),
-                                                                                                            version: (&version[..]).into(),
-                                                                                                            path: Arc::from(server_dir.to_path_buf()),
-                                                                                                        });
+                                                                                                    Ok(output) => {
+                                                                                                        // Check if the fabric-server-launch.jar was created (success indicator)
+                                                                                                        let fabric_server_jar = server_dir.join("fabric-server-launch.jar");
+                                                                                                        let has_fabric_jar = fabric_server_jar.exists();
+                                                                                                        
+                                                                                                        if output.status.success() || has_fabric_jar {
+                                                                                                            // Clean up installer jar
+                                                                                                            let _ = tokio::fs::remove_file(&installer_path).await;
+                                                                                                            tracker.set_title(Arc::from(format!("✓ Fabric {} server installed successfully", version).as_str()));
+                                                                                                            tracker.set_finished(ProgressTrackerFinishType::Normal);
+                                                                                                            tracker.notify();
+                                                                                                            sender.send(MessageToFrontend::ServerAdded {
+                                                                                                                name: name.into(),
+                                                                                                                software: "Fabric".into(),
+                                                                                                                version: (&version[..]).into(),
+                                                                                                                path: Arc::from(server_dir.to_path_buf()),
+                                                                                                            });
+                                                                                                        } else {
+                                                                                                            let error_msg = String::from_utf8_lossy(&output.stderr);
+                                                                                                            tracker.set_title(Arc::from(format!("✗ Fabric installer failed. Error: {}", if error_msg.is_empty() { "Unknown error" } else { &error_msg }).as_str()));
+                                                                                                            tracker.set_finished(ProgressTrackerFinishType::Error);
+                                                                                                            tracker.notify();
+                                                                                                        }
                                                                                                     },
-                                                                                                    _ => {
-                                                                                                        tracker.set_title(Arc::from("✗ Fabric installer failed. Make sure Java is installed."));
+                                                                                                    Err(e) => {
+                                                                                                        tracker.set_title(Arc::from(format!("✗ Failed to run Fabric installer: {}", e).as_str()));
                                                                                                         tracker.set_finished(ProgressTrackerFinishType::Error);
                                                                                                         tracker.notify();
                                                                                                     }

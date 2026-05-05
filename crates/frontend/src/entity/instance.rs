@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use bridge::{
-    instance::{InstanceContentSummary, InstanceID, InstanceServerSummary, InstanceStatus, InstanceWorldSummary},
+    instance::{InstanceContentSummary, InstanceID, InstancePlaytime, InstanceServerSummary, InstanceStatus, InstanceWorldSummary},
     message::BridgeDataLoadState,
 };
 use gpui::{prelude::*, *};
@@ -37,6 +37,7 @@ impl InstanceEntries {
                 root_path,
                 dot_minecraft_folder,
                 configuration,
+                playtime: InstancePlaytime::default(),
                 status: InstanceStatus::NotRunning,
                 worlds_state,
                 worlds: cx.new(|_| [].into()),
@@ -133,6 +134,22 @@ impl InstanceEntries {
         });
     }
 
+    pub fn set_playtime(
+        entity: &Entity<Self>,
+        id: InstanceID,
+        playtime: InstancePlaytime,
+        cx: &mut App,
+    ) {
+        entity.update(cx, |entries, cx| {
+            if let Some(instance) = entries.entries.get_mut(&id) {
+                instance.update(cx, |instance, cx| {
+                    instance.playtime = playtime;
+                    cx.notify();
+                })
+            }
+        });
+    }
+
     pub fn set_worlds(
         entity: &Entity<Self>,
         id: InstanceID,
@@ -217,6 +234,7 @@ pub struct InstanceEntry {
     pub root_path: Arc<Path>,
     pub dot_minecraft_folder: Arc<Path>,
     pub configuration: InstanceConfiguration,
+    pub playtime: InstancePlaytime,
     pub status: InstanceStatus,
     pub worlds_state: BridgeDataLoadState,
     pub worlds: Entity<Arc<[InstanceWorldSummary]>>,

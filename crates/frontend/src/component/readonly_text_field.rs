@@ -166,8 +166,8 @@ impl TextFieldLine {
                         TextRun {
                             len: highlight_end - highlight_start,
                             font: font.clone(),
-                            color: gpui::black(),
-                            background_color: Some(gpui::yellow()),
+                            color: gpui::white(),
+                            background_color: Some(gpui::hsla(0.0, 0.0, 0.5, 1.0)),
                             underline: text_style.underline,
                             strikethrough: text_style.strikethrough,
                         },

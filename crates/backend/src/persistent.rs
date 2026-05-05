@@ -73,6 +73,14 @@ impl<T: Serialize + for <'de> Deserialize<'de>> Persistent<T> {
         &self.data
     }
 
+    pub fn set(&mut self, value: T) {
+        self.data = value;
+
+        if let Ok(bytes) = serde_json::to_vec(&self.data) {
+            let _ = crate::write_safe(&self.path, &bytes);
+        }
+    }
+
     #[inline(always)]
     pub fn sanity_check_path_eq(&self, path: &Path) {
         debug_assert_eq!(path, &*self.path);

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet, hash::{DefaultHasher, Hash, Hasher}, io::Read, path::Path, process::Child, sync::Arc
+    collections::HashSet, hash::{DefaultHasher, Hash, Hasher}, io::Read, path::Path, process::Child, sync::Arc, time::Instant
 };
 
 use anyhow::Context;
@@ -12,7 +12,7 @@ use bridge::{
 use futures::FutureExt;
 use relative_path::RelativePath;
 use rustc_hash::FxHashSet;
-use schema::{auxiliary::{AuxDisabledChildren, AuxiliaryContentMeta}, instance::InstanceConfiguration, loader::Loader};
+use schema::{auxiliary::{AuxDisabledChildren, AuxiliaryContentMeta}, instance::{InstanceConfiguration, InstanceStats}, loader::Loader};
 use strum::IntoEnumIterator;
 use thiserror::Error;
 
@@ -34,6 +34,7 @@ pub struct Instance {
     pub launch_keepalive: Option<KeepAliveHandle>,
     pub game_output_id: Option<usize>,
     pub processes: Vec<Child>,
+    pub session_started_at: Option<Instant>,
 
     pub worlds_state: BridgeDataLoadState,
     dirty_worlds: FolderChanges,
@@ -48,6 +49,7 @@ pub struct Instance {
     content_generation: usize,
 
     pub content_state: enum_map::EnumMap<ContentFolder, ContentFolderState>,
+    pub stats: Persistent<InstanceStats>,
 }
 
 #[derive(Debug)]
@@ -717,6 +719,9 @@ impl Instance {
             Persistent::try_load(info_path.clone())?
         };
 
+        let stats_path: Arc<Path> = path.join("stats.json").into();
+        let stats = Persistent::load_or(stats_path, InstanceStats::default());
+
         let mut dot_minecraft_path = path.to_owned();
         dot_minecraft_path.push(".minecraft");
 
@@ -743,6 +748,7 @@ impl Instance {
             launch_keepalive: None,
             game_output_id: None,
             processes: Vec::new(),
+            session_started_at: None,
 
             worlds_state: BridgeDataLoadState::default(),
             dirty_worlds: FolderChanges::all_dirty(),
@@ -757,6 +763,7 @@ impl Instance {
             content_generation: 0,
 
             content_state,
+            stats,
         })
     }
 

@@ -10,7 +10,7 @@ use gpui_component::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    entity::{DataEntities, instance::InstanceEntry}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::{instance::{logs_subpage::InstanceLogsSubpage, mods_subpage::InstanceModsSubpage, resource_packs_subpage::InstanceResourcePacksSubpage, settings_subpage::InstanceSettingsSubpage}, page::Page}, root, ts
+    entity::{DataEntities, instance::InstanceEntry}, icon::PandoraIcon, interface_config::InterfaceConfig, pages::{instance::{logs_subpage::InstanceLogsSubpage, mods_subpage::InstanceModsSubpage, resource_packs_subpage::InstanceResourcePacksSubpage, settings_subpage::InstanceSettingsSubpage, statistics_subpage::InstanceStatisticsSubpage}, page::Page}, root, ts
 };
 
 pub struct InstancePage {
@@ -101,6 +101,7 @@ impl Render for InstancePage {
             InstanceSubpage::Mods(_) => 1,
             InstanceSubpage::ResourcePacks(_) => 2,
             InstanceSubpage::Settings(_) => 3,
+            InstanceSubpage::Statistics(_) => 4,
         };
 
         v_flex()
@@ -114,12 +115,14 @@ impl Render for InstancePage {
                     .child(Tab::new().label(ts!("instance.content.mods")))
                     .child(Tab::new().label(ts!("instance.content.resourcepacks")))
                     .child(Tab::new().label(ts!("settings.title")))
+                    .child(Tab::new().label(ts!("instance.statistics")))
                     .on_click(cx.listener(|_, index, _, cx| {
                         let page_type = match *index {
                             0 => InstanceSubpageType::Logs,
                             1 => InstanceSubpageType::Mods,
                             2 => InstanceSubpageType::ResourcePacks,
                             3 => InstanceSubpageType::Settings,
+                            4 => InstanceSubpageType::Statistics,
                             _ => {
                                 return;
                             },
@@ -139,6 +142,7 @@ pub enum InstanceSubpageType {
     Mods,
     ResourcePacks,
     Settings,
+    Statistics,
 }
 
 impl InstanceSubpageType {
@@ -163,6 +167,9 @@ impl InstanceSubpageType {
             InstanceSubpageType::Settings => InstanceSubpage::Settings(cx.new(|cx| {
                 InstanceSettingsSubpage::new(instance, data, backend_handle, window, cx)
             })),
+            InstanceSubpageType::Statistics => InstanceSubpage::Statistics(cx.new(|cx| {
+                InstanceStatisticsSubpage::new(instance, backend_handle, window, cx)
+            })),
         }
     }
 }
@@ -173,6 +180,7 @@ pub enum InstanceSubpage {
     Mods(Entity<InstanceModsSubpage>),
     ResourcePacks(Entity<InstanceResourcePacksSubpage>),
     Settings(Entity<InstanceSettingsSubpage>),
+    Statistics(Entity<InstanceStatisticsSubpage>),
 }
 
 impl InstanceSubpage {
@@ -182,6 +190,7 @@ impl InstanceSubpage {
             InstanceSubpage::Mods(_) => InstanceSubpageType::Mods,
             InstanceSubpage::ResourcePacks(_) => InstanceSubpageType::ResourcePacks,
             InstanceSubpage::Settings(_) => InstanceSubpageType::Settings,
+            InstanceSubpage::Statistics(_) => InstanceSubpageType::Statistics,
         }
     }
 
@@ -191,6 +200,7 @@ impl InstanceSubpage {
             Self::Mods(entity) => entity.into_any_element(),
             Self::ResourcePacks(entity) => entity.into_any_element(),
             Self::Settings(entity) => entity.into_any_element(),
+            Self::Statistics(entity) => entity.into_any_element(),
         }
     }
 }

@@ -498,6 +498,26 @@ instance:
       error:
         en: Error uploading log file
 
+  # Statistics
+  statistics:
+    en: Statistics
+    playtime:
+      en: Total Playtime
+    sessions:
+      en: Sessions Played
+    last_played:
+      en: Last Played
+    never:
+      en: Never
+    just_now:
+      en: Just now
+    minutes_ago:
+      en: "{} minutes ago"
+    hours_ago:
+      en: "{} hours ago"
+    days_ago:
+      en: "{} days ago"
+
   # Content Management
   content:
     title:
@@ -810,3 +830,19 @@ login:
     en: Login
   error:
     en: Error while logging in
+
+server:
+  statistics:
+    en: Server Statistics
+    software:
+      en: Server Software
+    version:
+      en: Server Version
+    port:
+      en: Server Port
+    size:
+      en: Server Size
+    total_uptime:
+      en: Total Uptime
+    start_count:
+      en: Start Count

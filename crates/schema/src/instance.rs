@@ -58,6 +58,13 @@ impl InstanceConfiguration {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct InstanceStats {
+    pub total_playtime_secs: u64,
+    pub session_count: u64,
+    pub last_played_unix_ms: Option<i64>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub struct InstanceMemoryConfiguration {
     pub enabled: bool,

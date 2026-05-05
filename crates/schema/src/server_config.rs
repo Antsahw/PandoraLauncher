@@ -63,3 +63,15 @@ fn is_default_java_configuration(config: &Option<ServerJavaConfiguration>) -> bo
         true
     }
 }
+
+/// Statistics tracking for Minecraft servers
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ServerStats {
+    /// Total uptime in seconds across all sessions
+    pub total_uptime_secs: u64,
+    /// Number of times the server has been started
+    pub start_count: u64,
+    /// Unix timestamp (milliseconds) of last start
+    pub last_started_unix_ms: Option<i64>,
+}
+

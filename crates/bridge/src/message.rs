@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     account::Account, game_output::GameOutputLogLevel, import::{ImportFromOtherLaunchers, OtherLauncher}, install::ContentInstall, instance::{
-        InstanceContentID, InstanceContentSummary, InstanceID, InstanceServerSummary, InstanceStatus,
+        InstanceContentID, InstanceContentSummary, InstanceID, InstancePlaytime, InstanceServerSummary, InstanceStatus,
         InstanceWorldSummary,
     }, keep_alive::{KeepAlive, KeepAliveHandle}, meta::{MetadataRequest, MetadataResult}, modal_action::ModalAction
 };
@@ -329,6 +329,10 @@ pub enum MessageToFrontend {
     InstanceResourcePacksUpdated {
         id: InstanceID,
         resource_packs: Arc<[InstanceContentSummary]>,
+    },
+    InstancePlaytimeUpdated {
+        id: InstanceID,
+        playtime: InstancePlaytime,
     },
     ServerAdded {
         name: Ustr,

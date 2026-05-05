@@ -154,6 +154,9 @@ impl Processor {
             MessageToFrontend::InstanceResourcePacksUpdated { id, resource_packs } => {
                 InstanceEntries::set_resource_packs(&self.data.instances, id, resource_packs, cx);
             },
+            MessageToFrontend::InstancePlaytimeUpdated { id, playtime } => {
+                InstanceEntries::set_playtime(&self.data.instances, id, playtime, cx);
+            },
             MessageToFrontend::AddNotification { .. } => {
                 self.with_main_window(message, cx, |_, message, window, cx| {
                     let MessageToFrontend::AddNotification { notification_type, message } = message else {

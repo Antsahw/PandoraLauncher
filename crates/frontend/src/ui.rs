@@ -317,10 +317,16 @@ impl LauncherUI {
         config.main_page = page.clone();
         config.page_path = page_path.into();
 
-        if let Some(previous_page) = self.previous_pages.remove(&page) {
-            self.page = previous_page;
-            self.previous_pages.retain(|k, _| page_path.contains(k));
-            return;
+        // Always create a fresh Servers page instead of using cached version
+        // This ensures changes like delete/rename are reflected
+        let use_cache = !matches!(page, PageType::Servers);
+        
+        if use_cache {
+            if let Some(previous_page) = self.previous_pages.remove(&page) {
+                self.page = previous_page;
+                self.previous_pages.retain(|k, _| page_path.contains(k));
+                return;
+            }
         }
 
         match Self::create_page(&self.data, page, window, cx) {

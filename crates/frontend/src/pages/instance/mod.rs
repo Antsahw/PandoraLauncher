@@ -5,4 +5,6 @@ pub mod quickplay_subpage;
 pub mod resource_packs_subpage;
 pub mod server_page;
 pub mod server_settings_subpage;
+pub mod server_statistics_subpage;
 pub mod settings_subpage;
+pub mod statistics_subpage;

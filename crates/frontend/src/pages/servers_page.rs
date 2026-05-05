@@ -85,6 +85,10 @@ impl Page for ServersPage {
 
 impl Render for ServersPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Always reload server list to ensure we have the latest state
+        // This ensures deletion, renaming, and other changes are reflected immediately
+        self.reload_servers(cx);
+
         match InterfaceConfig::get(cx).servers_view_mode {
             ServersViewMode::Cards => {
                 let cards = self.server_table.update(cx, |table, cx| {

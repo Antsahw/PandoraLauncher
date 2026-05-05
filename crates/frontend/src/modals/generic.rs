@@ -152,13 +152,13 @@ pub fn show_modal(
             if !prevent_finish {
                 let elapsed = finished_at.elapsed().as_secs_f32();
                 window.request_animation_frame();
-                if elapsed >= 2.0 {
+                if elapsed >= 1.0 {
                     window.defer(cx, |window, cx| {
                         window.close_dialog(cx);
                     });
                     return modal.opacity(0.0);
-                } else if elapsed >= 1.0 {
-                    modal_opacity = 2.0 - elapsed;
+                } else if elapsed >= 0.5 {
+                    modal_opacity = 2.0 * (1.0 - elapsed);
                 }
             }
         }
@@ -178,7 +178,7 @@ pub fn show_modal(
                 }
 
                 let elapsed = finished_at.elapsed().as_secs_f32();
-                if elapsed >= 2.0 {
+                if elapsed >= 1.0 {
                     to_remove.push(index);
                     continue;
                 }

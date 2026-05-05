@@ -177,6 +177,14 @@ impl BackendState {
                 match std::fs::rename(&old_path, &new_path) {
                     Ok(_) => {
                         self.send.send_success(format!("Server renamed from '{}' to '{}'", old_name, new_name));
+                        // Update server metadata file with new name
+                        let metadata_path = new_path.join("server_metadata.json");
+                        if let Ok(content) = std::fs::read_to_string(&metadata_path) {
+                            if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(&content) {
+                                metadata["name"] = serde_json::Value::String(new_name.to_string());
+                                let _ = crate::write_safe(&metadata_path, serde_json::to_string_pretty(&metadata).unwrap().as_bytes());
+                            }
+                        }
                         self.send.send(bridge::message::MessageToFrontend::Refresh);
                     },
                     Err(e) => {
@@ -408,6 +416,28 @@ impl BackendState {
 
                 let instance_name = instance.name.clone();
                 
+                // Update playtime stats
+                let mut playtime = None;
+                if let Some(session_start) = instance.session_started_at {
+                    let session_duration = session_start.elapsed().as_secs();
+                    let mut stats = instance.stats.get().clone();
+                    stats.total_playtime_secs += session_duration;
+                    stats.session_count += 1;
+                    stats.last_played_unix_ms = Some(std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0));
+                    instance.stats.set(stats.clone());
+                    instance.session_started_at = None;
+                    
+                    // Convert to bridge InstancePlaytime
+                    playtime = Some(bridge::instance::InstancePlaytime {
+                        total_secs: stats.total_playtime_secs,
+                        current_session_secs: 0,
+                        last_played_unix_ms: stats.last_played_unix_ms,
+                    });
+                }
+                
                 for mut process in instance.processes.drain(..) {
                     let result = process.kill();
                     if result.is_err() {
@@ -422,6 +452,14 @@ impl BackendState {
                         time: chrono::Local::now().timestamp_millis(),
                         level: GameOutputLogLevel::Info,
                         text: Arc::from([Arc::from("Pandora: Killed")]),
+                    });
+                }
+                
+                // Send playtime update
+                if let Some(pt) = playtime {
+                    self.send.send(MessageToFrontend::InstancePlaytimeUpdated {
+                        id,
+                        playtime: pt,
                     });
                 }
                 
@@ -509,6 +547,7 @@ impl BackendState {
                         child.stdout.take();
 
                         if let Some(instance) = self.instance_state.write().instances.get_mut(id) {
+                            instance.session_started_at = Some(std::time::Instant::now());
                             instance.processes.push(child);
                         }
                     },
@@ -2386,6 +2425,9 @@ impl BackendState {
                 let pid = child.id();
                 self.send.send_info(format!("Server started (PID: {})", pid));
                 
+                // Track server start time for uptime calculation
+                self.server_start_times.write().insert(name.to_string(), Instant::now());
+                
                 // Start game output like instances do
                 if let Some(stdout) = child.stdout.take() {
                     let game_output_id = log_reader::start_game_output(stdout, child.stderr.take(), self.send.clone(), name);
@@ -2394,6 +2436,29 @@ impl BackendState {
 
                 // Store the child process for later stopping
                 self.server_processes.write().insert(name.to_string(), child);
+                
+                // Update server stats - increment start count
+                let server_dir = self.directories.servers_dir.join(name);
+                let stats_path = server_dir.join("stats.json");
+                
+                // Ensure stats file exists with defaults if needed
+                let mut stats = if let Ok(stats_json) = crate::read_json::<schema::server_config::ServerStats>(&stats_path) {
+                    stats_json
+                } else {
+                    // Initialize with defaults if file doesn't exist
+                    schema::server_config::ServerStats {
+                        total_uptime_secs: 0,
+                        start_count: 0,
+                        last_started_unix_ms: None,
+                    }
+                };
+                
+                stats.start_count += 1;
+                stats.last_started_unix_ms = Some(std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0));
+                let _ = crate::write_safe(&stats_path, serde_json::to_string_pretty(&stats).unwrap_or_default().as_bytes());
 
                 modal_action.set_finished();
             }
@@ -2406,6 +2471,29 @@ impl BackendState {
     }
 
     pub async fn stop_server(&self, name: &str) {
+        // Calculate uptime if server was running
+        if let Some(start_time) = self.server_start_times.write().remove(name) {
+            let uptime_secs = start_time.elapsed().as_secs();
+            
+            // Update server stats
+            let server_dir = self.directories.servers_dir.join(name);
+            let stats_path = server_dir.join("stats.json");
+            
+            // Ensure stats file exists with defaults if needed
+            let mut stats = if let Ok(stats_json) = crate::read_json::<schema::server_config::ServerStats>(&stats_path) {
+                stats_json
+            } else {
+                schema::server_config::ServerStats {
+                    total_uptime_secs: 0,
+                    start_count: 0,
+                    last_started_unix_ms: None,
+                }
+            };
+            
+            stats.total_uptime_secs += uptime_secs;
+            let _ = crate::write_safe(&stats_path, serde_json::to_string_pretty(&stats).unwrap_or_default().as_bytes());
+        }
+        
         if let Some(mut child) = self.server_processes.write().remove(name) {
             match child.kill() {
                 Ok(_) => {
