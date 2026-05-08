@@ -54,7 +54,7 @@ pub fn show_notification_with_note(
                     }
 
                     let elapsed = finished_at.elapsed().as_secs_f32();
-                    if elapsed >= 2.0 {
+                    if elapsed >= 0.5 {
                         to_remove.push(index);
                         continue;
                     }
@@ -86,8 +86,8 @@ pub fn show_notification_with_note(
                     finishing_tracker_slots -= 1;
 
                     let elapsed = finished_at.elapsed().as_secs_f32();
-                    if elapsed >= 1.0 {
-                        opacity = (2.0 - elapsed).max(0.0);
+                    if elapsed >= 0.2 {
+                        opacity = (0.5 - elapsed).max(0.0);
                     }
 
                     let finish_type = tracker.finish_type();

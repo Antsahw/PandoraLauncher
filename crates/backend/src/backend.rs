@@ -1,6 +1,9 @@
 use std::{
-    collections::HashMap, path::{Path, PathBuf}, sync::Arc, time::{Duration, Instant, SystemTime}
+    collections::HashMap, path::{Path, PathBuf}, 
+    sync::Arc, time::{Duration, Instant, SystemTime}
 };
+#[cfg(unix)]
+use libc;
 
 use auth::{
     authenticator::{Authenticator, MsaAuthorizationError, XboxAuthenticateError},
@@ -81,6 +84,8 @@ pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHa
             &directories.runtime_base_dir,
             &mut cfg.java_runtimes,
         );
+        // Also detect system Java installations
+        crate::java_manager::merge_system_java_runtimes(&mut cfg.java_runtimes);
     });
 
     let proxy_config = config.get().proxy.clone();
@@ -480,6 +485,22 @@ impl BackendState {
                 self.send.send(instance.create_modify_message());
             }
         }
+
+        // Cleanup dead server processes
+        let mut server_processes = self.server_processes.write();
+        let mut server_game_output_ids = self.server_game_output_ids.write();
+        let mut server_start_times = self.server_start_times.write();
+        
+        server_processes.retain(|name, child| {
+            if matches!(child.try_wait(), Ok(None)) {
+                true
+            } else {
+                log::debug!("Server process '{}' is no longer alive", name);
+                server_game_output_ids.remove(name);
+                server_start_times.remove(name);
+                false
+            }
+        });
     }
 
     pub async fn login(
@@ -1363,9 +1384,10 @@ impl BackendState {
         let version_clone = version.to_string();
         let software_clone = server_software.to_string();
         let modal_action_clone = modal_action.clone();
+        let java_config = self.config.write().get().java_runtimes.clone();
         
         tokio::spawn(async move {
-            let _ = download_server_jar_background(&sender, &server_dir_clone, software_clone.as_str(), version_clone.as_str(), name_clone.as_str(), &modal_action_clone).await;
+            let _ = download_server_jar_background(&sender, &server_dir_clone, software_clone.as_str(), version_clone.as_str(), name_clone.as_str(), &modal_action_clone, &java_config).await;
         });
         
         Some(server_dir.clone())
@@ -1562,7 +1584,7 @@ impl BackendStateFileWatching {
     }
 }
 
-async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle, server_dir: &Path, software: &str, version: &str, name: &str, modal_action: &bridge::modal_action::ModalAction) -> Result<(), Box<dyn std::error::Error>> {
+async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle, server_dir: &Path, software: &str, version: &str, name: &str, modal_action: &bridge::modal_action::ModalAction, java_config: &schema::backend_config::JavaRuntimesConfig) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let version = version.to_string();
     let software = software.to_string();
@@ -1791,6 +1813,21 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
             }
         },
         "Fabric" => {
+            // Use new installer with caching and proper validation
+            match crate::server_installer::install_fabric_server(&client, server_dir, &version, &tracker).await {
+                Ok(_jar_name) => {
+                    tracker.set_title(Arc::from(format!("✓ Fabric {} server installed successfully", version).as_str()));
+                    tracker.set_finished(ProgressTrackerFinishType::Normal);
+                    tracker.notify();
+                }
+                Err(e) => {
+                    tracker.set_title(Arc::from(format!("✗ Fabric {} installation failed: {}", version, e).as_str()));
+                    tracker.set_finished(ProgressTrackerFinishType::Error);
+                    tracker.notify();
+                }
+            }
+        },
+        "Fabric_OLD" => {
             tracker.set_title(Arc::from(format!("Setting up Fabric {} server...", version).as_str()));
             tracker.notify();
             
@@ -2391,6 +2428,47 @@ async fn download_server_jar_background(sender: &bridge::handle::FrontendHandle,
     
     // Mark progress as finished
     tracker.set_finished(ProgressTrackerFinishType::Normal);
+    
+    // Generate start.sh script for the server
+    let jar_name = crate::server_installer::find_server_jar(server_dir);
+    
+    // Load server config and extract Java runtime setting
+    let server_runtime_name = {
+        let config_path = server_dir.join(".minecraft/server_config.json");
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(java_cfg) = json.get("java") {
+                    if java_cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        java_cfg.get("runtime_name").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    
+    // Get Java executable using server's configured runtime or global config
+    let java_executable = crate::java_manager::resolve_java_executable(
+        java_config,
+        server_runtime_name.as_deref(),
+    );
+    let java_exe_str = java_executable.to_string_lossy();
+    
+    // Generate start.sh
+    if let Err(e) = crate::server_installer::generate_start_script(
+        server_dir,
+        &java_exe_str,
+        &jar_name,
+    ) {
+        log::warn!("Failed to generate start.sh for server {}: {}", name, e);
+    }
     
     // Send server added message to notify UI
     let message = MessageToFrontend::ServerAdded {

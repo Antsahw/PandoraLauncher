@@ -223,6 +223,26 @@ pub fn validate_java_executable(java_path: &Path) -> bool {
     }
 }
 
+/// Detect system Java installations and merge them into the config
+/// This adds system-detected Java runtimes without overriding manually configured ones
+pub fn merge_system_java_runtimes(java_config: &mut JavaRuntimesConfig) {
+    let system_runtimes = crate::java_runtime::detect_java_runtimes();
+    
+    // Ensure runtimes map exists
+    if java_config.runtimes.is_none() {
+        java_config.runtimes = Some(BTreeMap::new());
+    }
+
+    if let Some(runtimes) = java_config.runtimes.as_mut() {
+        for (key, system_runtime) in system_runtimes {
+            // Only add if not already present (manually configured runtimes take priority)
+            if !runtimes.contains_key(&key) {
+                runtimes.insert(key, system_runtime);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

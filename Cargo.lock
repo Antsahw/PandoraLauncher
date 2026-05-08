@@ -644,6 +644,7 @@ dependencies = [
  "indexmap 2.13.0",
  "junction",
  "lexical-sort",
+ "libc",
  "log",
  "lzma-rs",
  "memchr",

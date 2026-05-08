@@ -232,8 +232,8 @@ impl TableDelegate for InstanceList {
                         .gap_2()
                         .size_full()
                         .px_2()
-                        .child(play_button.small())
-                        .child(Button::new(("view", row_ix)).small().info().label(ts!("instance.view")).on_click({
+                        .child(play_button)
+                        .child(Button::new(("view", row_ix)).small().info().w(px(50.0)).label(ts!("instance.view")).on_click({
                             let name = item.name.clone();
                             move |_, window, cx| {
                                 root::switch_page(ui::PageType::InstancePage { name: name.clone() },
@@ -266,6 +266,7 @@ fn render_play_button(item: &InstanceEntry, index: usize, backend_handle: Backen
             Button::new(("start_instance", index))
                 .success()
                 .small()
+                .w(px(50.0))
                 .label(ts!("instance.start.label"))
                 .on_click(
                 move |_, window, cx| {
@@ -277,12 +278,14 @@ fn render_play_button(item: &InstanceEntry, index: usize, backend_handle: Backen
             Button::new(("launching", index))
                 .warning()
                 .small()
+                .w(px(50.0))
                 .label("...")
         },
         InstanceStatus::Running => {
             Button::new(("kill_instance", index))
-                .danger()
+                .info()
                 .small()
+                .w(px(50.0))
                 .label(ts!("instance.kill"))
                 .on_click({
                     let backend_handle = backend_handle.clone();

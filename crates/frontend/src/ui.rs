@@ -668,8 +668,7 @@ fn open_bug_report_url(window: &mut Window, cx: &mut App) {
     }
 
     let Some(github) = option_env!("GITHUB_REPOSITORY_URL") else {
-        let mut notification: Notification = (NotificationType::Error, SharedString::from("Unable to report bug, GITHUB_REPOSITORY_URL was not set at compile time")).into();
-        notification = notification.autohide(false);
+        let notification: Notification = (NotificationType::Error, SharedString::from("Unable to report bug, GITHUB_REPOSITORY_URL was not set at compile time")).into();
         window.push_notification(notification, cx);
         return;
     };

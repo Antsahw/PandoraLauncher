@@ -88,7 +88,9 @@ pub fn detect_java_runtimes() -> BTreeMap<String, JavaRuntime> {
                     let path = entry.path();
                     if let Some(java_bin) = find_java_binary(&path) {
                         if let Some(runtime) = create_runtime_from_path(&java_bin) {
-                            runtimes.insert(runtime.name.to_lowercase().replace(" ", "_"), runtime);
+                            // Use consistent key format: java{version} (e.g., "java25", "java21")
+                            let key = format!("java{}", runtime.version);
+                            runtimes.insert(key, runtime);
                         }
                     }
                 }
@@ -111,7 +113,9 @@ pub fn detect_java_runtimes() -> BTreeMap<String, JavaRuntime> {
                     let path = entry.path();
                     if let Some(java_bin) = find_java_binary(&path) {
                         if let Some(runtime) = create_runtime_from_path(&java_bin) {
-                            runtimes.insert(runtime.name.to_lowercase().replace(" ", "_"), runtime);
+                            // Use consistent key format: java{version} (e.g., "java25", "java21")
+                            let key = format!("java{}", runtime.version);
+                            runtimes.insert(key, runtime);
                         }
                     }
                 }

@@ -979,6 +979,10 @@ impl ScrollbarHandle for ScrollHandler {
 }
 
 impl GameOutputRoot {
+    pub fn mark_server_stopped(&mut self, server_name: &str) {
+        self.server_statuses.insert(server_name.to_string(), false);
+    }
+
     pub fn new(
         keep_alive: KeepAlive,
         game_output: Entity<GameOutput>,
@@ -1572,15 +1576,28 @@ impl Render for GameOutputRoot {
                         root.backend_handle.send(MessageToBackend::KillInstance { id: instance_id });
                     }));
                 } else if is_server_running {
-                    kill_btn = kill_btn.on_click(cx.listener(move |root, _, _, _cx| {
-                        // Send stop server message to backend
-                        if let Some(server_name) = root.active_instance_id
-                            .and_then(|output_id| root.server_names.get(&output_id))
-                            .cloned()
-                        {
-                            // Mark server as stopped immediately
-                            root.server_statuses.insert(server_name.clone(), false);
-                            root.backend_handle.send(MessageToBackend::StopServer { name: server_name.into() });
+                    kill_btn = kill_btn.on_click(cx.listener(move |root, _, window, cx| {
+                        // Auto-type "stop" command and send it
+                        if let Some(command_state) = root.server_command_state.as_ref() {
+                            command_state.update(cx, |state, cx| {
+                                state.set_value("stop", window, cx);
+                            });
+                            // Trigger the command input event manually
+                            if let Some(server_name) = root.active_instance_id
+                                .and_then(|output_id| root.server_names.get(&output_id))
+                                .cloned()
+                            {
+                                // Mark server as stopped immediately
+                                root.server_statuses.insert(server_name.clone(), false);
+                                root.backend_handle.send(MessageToBackend::SendServerCommand {
+                                    name: server_name.into(),
+                                    command: "stop".into(),
+                                });
+                                // Clear the input
+                                command_state.update(cx, |state, cx| {
+                                    state.set_value("", window, cx);
+                                });
+                            }
                         }
                     }));
                 } else {

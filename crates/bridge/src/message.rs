@@ -74,6 +74,15 @@ pub enum MessageToBackend {
         name: Ustr,
         java_runtime: Ustr,
     },
+    SetServerMemory {
+        name: Ustr,
+        min_memory: u32,
+        max_memory: u32,
+    },
+    SetServerJVMFlags {
+        name: Ustr,
+        flags: Ustr,
+    },
     DeleteInstance {
         id: InstanceID,
     },

@@ -56,6 +56,20 @@ impl ServersPage {
         });
         cx.notify();
     }
+
+    pub fn mark_server_running(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.server_table.update(cx, |table, _cx| {
+            table.delegate_mut().mark_server_running(name);
+        });
+        cx.notify();
+    }
+
+    pub fn mark_server_stopped(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.server_table.update(cx, |table, _cx| {
+            table.delegate_mut().mark_server_stopped(name);
+        });
+        cx.notify();
+    }
 }
 
 impl Page for ServersPage {

@@ -928,15 +928,7 @@ impl Launcher {
         java_config: &schema::backend_config::JavaRuntimesConfig,
         skip_integrity_check: bool,
     ) -> Result<PathBuf, LoadJavaRuntimeError> {
-        if let Some(jvm_binary) = &configuration.jvm_binary {
-            if jvm_binary.enabled && let Some(path) = &jvm_binary.path {
-                if let Some(binary) = Self::search_for_java_binary(&path) {
-                    return Ok(binary);
-                }
-            }
-        }
-
-        // Check per-instance java_runtime selection
+        // Check per-instance java_runtime selection FIRST (takes priority over jvm_binary)
         if let Some(java_runtime) = &configuration.java_runtime {
             if java_runtime.enabled && !java_runtime.runtime_name.is_empty() {
                 let java_path = crate::java_manager::resolve_java_executable(java_config, Some(&java_runtime.runtime_name));
@@ -950,6 +942,15 @@ impl Launcher {
                 } else {
                     // "system" java - just return it
                     return Ok(java_path);
+                }
+            }
+        }
+
+        // Fall back to jvm_binary if java_runtime is not configured
+        if let Some(jvm_binary) = &configuration.jvm_binary {
+            if jvm_binary.enabled && let Some(path) = &jvm_binary.path {
+                if let Some(binary) = Self::search_for_java_binary(&path) {
+                    return Ok(binary);
                 }
             }
         }
@@ -2205,6 +2206,20 @@ impl LaunchContext {
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    // Put the child in its own process group so we can kill it and all its children.
+                    if ::libc::setpgid(0, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
 
         self.classpath.push(self.launch_wrapper_path.as_os_str().to_os_string());
 

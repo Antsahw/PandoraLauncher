@@ -26,6 +26,9 @@ pub struct ServerJavaConfiguration {
     /// Memory configuration for the server
     #[serde(default, skip_serializing_if = "crate::skip_if_none")]
     pub memory: Option<ServerMemoryConfiguration>,
+    /// JVM flags to pass to the Java runtime
+    #[serde(default, skip_serializing_if = "crate::skip_if_default", deserialize_with = "crate::try_deserialize")]
+    pub jvm_flags: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]

@@ -245,7 +245,7 @@ impl ServerSubpageType {
             })),
             ServerSubpageType::Settings => {
                 ServerSubpage::Settings(cx.new(|cx| {
-                    ServerSettingsSubpage::new(server_name.clone(), backend_handle.clone(), window, cx)
+                    ServerSettingsSubpage::new(server_name.clone(), backend_handle.clone(), data, window, cx)
                 }))
             }
             ServerSubpageType::Properties => {
@@ -529,7 +529,8 @@ pub struct ServerPropertiesSubpage {
     
     search_input: Entity<InputState>,
     search_positions: Vec<(usize, usize)>,
-    _file_input_subscription: Subscription,
+    search_focused: bool,
+    _file_input_subscriptions: Vec<Subscription>,
 }
 
 impl ServerPropertiesSubpage {
@@ -577,7 +578,14 @@ impl ServerPropertiesSubpage {
         });
         
         // Subscription for file content changes
-        let _file_input_subscription = cx.subscribe_in(&server_props_input, window, Self::on_file_content_changed);
+        let mut subscriptions = Vec::new();
+        subscriptions.push(cx.subscribe_in(&server_props_input, window, Self::on_file_content_changed));
+        subscriptions.push(cx.subscribe_in(&banned_players_input, window, Self::on_file_content_changed));
+        subscriptions.push(cx.subscribe_in(&banned_ips_input, window, Self::on_file_content_changed));
+        subscriptions.push(cx.subscribe_in(&whitelist_input, window, Self::on_file_content_changed));
+        subscriptions.push(cx.subscribe_in(&ops_input, window, Self::on_file_content_changed));
+        subscriptions.push(cx.subscribe_in(&user_cache_input, window, Self::on_file_content_changed));
+        subscriptions.push(cx.subscribe_in(&search_input, window, Self::on_search_event));
         
         // Request all files from backend
         for file_type in &[
@@ -607,7 +615,8 @@ impl ServerPropertiesSubpage {
             user_cache_input,
             search_input,
             search_positions: Vec::new(),
-            _file_input_subscription,
+            search_focused: false,
+            _file_input_subscriptions: subscriptions,
         }
     }
     
@@ -625,11 +634,47 @@ impl ServerPropertiesSubpage {
     fn on_file_content_changed(
         &mut self,
         _state: &Entity<InputState>,
-        _event: &InputEvent,
+        event: &InputEvent,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        // File content was changed - could trigger auto-save here
+        match event {
+            InputEvent::Change => {
+                let input = self.get_input_for_file(self.current_file);
+                let content = input.read(cx).value();
+                
+                self.backend_handle.send(bridge::message::MessageToBackend::WriteServerFile {
+                    name: self.server_name.as_str().into(),
+                    filename: self.current_file.filename().into(),
+                    content: content.as_str().into(),
+                });
+            }
+            InputEvent::Focus => {
+                self.search_focused = false;
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+    
+    fn on_search_event(
+        &mut self,
+        _state: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Focus => {
+                self.search_focused = true;
+                cx.notify();
+            }
+            InputEvent::Blur => {
+                self.search_focused = false;
+                cx.notify();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -725,76 +770,99 @@ impl Render for ServerPropertiesSubpage {
                     .border_color(theme.border)
                     .overflow_hidden()
                     .child(
-                        v_flex()
-                            .size_full()
-                            .overflow_y_scrollbar()
-                            .bg(gpui::black())
-                            .p_2()
-                            .font_family("Monospace")
-                            .text_color(gpui::white())
-                            .child({
-                                let mut result = Vec::new();
-                                let lines: Vec<&str> = content.split('\n').collect();
-                                let mut byte_offset = 0;
-                                
-                                for line in lines {
-                                    let line_start = byte_offset;
-                                    let line_end = byte_offset + line.len();
+                        if self.search_focused || !self.search_positions.is_empty() {
+                            // Read-only view with highlighting when searching - styled like editable view
+                            v_flex()
+                                .size_full()
+                                .overflow_y_scrollbar()
+                                .p_2()
+                                .bg(theme.highlight_theme.style.editor_background.unwrap_or(gpui::rgb(0x1e1e1e).into()))
+                                .text_sm()
+                                .line_height(gpui::relative(1.5))
+                                .font_family("Monospace")
+                                .child({
+                                    let mut result = Vec::new();
+                                    let lines: Vec<&str> = content.split('\n').collect();
+                                    let mut byte_offset = 0;
                                     
-                                    let mut spans = Vec::new();
-                                    let mut pos = 0;
-                                    
-                                    for (start, end) in &self.search_positions {
-                                        if *end <= line_start || *start >= line_end {
-                                            continue;
+                                    for line in lines {
+                                        let line_start = byte_offset;
+                                        let line_end = byte_offset + line.len();
+                                        
+                                        let mut spans = Vec::new();
+                                        let mut pos = 0;
+                                        
+                                        for (start, end) in &self.search_positions {
+                                            if *end <= line_start || *start >= line_end {
+                                                continue;
+                                            }
+                                            
+                                            let match_start = if *start > line_start { *start - line_start } else { 0 };
+                                            let match_end = std::cmp::min(*end - line_start, line.len());
+                                            
+                                            if match_start > pos {
+                                                spans.push(div()
+                                                    .text_sm()
+                                                    .line_height(gpui::relative(1.5))
+                                                    .child(line[pos..match_start].to_string())
+                                                    .into_any_element()
+                                                );
+                                            }
+                                            
+                                            spans.push(div()
+                                                .bg(gpui::rgb(0x808080))
+                                                .text_sm()
+                                                .line_height(gpui::relative(1.5))
+                                                .child(line[match_start..match_end].to_string())
+                                                .into_any_element()
+                                            );
+                                            
+                                            pos = match_end;
                                         }
                                         
-                                        let match_start = if *start > line_start { *start - line_start } else { 0 };
-                                        let match_end = std::cmp::min(*end - line_start, line.len());
-                                        
-                                        if match_start > pos {
+                                        if pos < line.len() {
                                             spans.push(div()
-                                                .child(line[pos..match_start].to_string())
+                                                .text_sm()
+                                                .line_height(gpui::relative(1.5))
+                                                .child(line[pos..].to_string())
                                                 .into_any_element()
                                             );
                                         }
                                         
-                                        spans.push(div()
-                                            .bg(gpui::rgb(0x808080))
-                                            .text_color(gpui::white())
-                                            .child(line[match_start..match_end].to_string())
-                                            .into_any_element()
+                                        if spans.is_empty() {
+                                            spans.push(div()
+                                                .text_sm()
+                                                .line_height(gpui::relative(1.5))
+                                                .child(line.to_string())
+                                                .into_any_element()
+                                            );
+                                        }
+                                        
+                                        result.push(
+                                            h_flex()
+                                                .w_full()
+                                                .children(spans)
+                                                .into_any_element()
                                         );
                                         
-                                        pos = match_end;
+                                        byte_offset = line_end + 1;
                                     }
                                     
-                                    if pos < line.len() {
-                                        spans.push(div()
-                                            .child(line[pos..].to_string())
-                                            .into_any_element()
-                                        );
-                                    }
-                                    
-                                    if spans.is_empty() {
-                                        spans.push(div()
-                                            .child(line.to_string())
-                                            .into_any_element()
-                                        );
-                                    }
-                                    
-                                    result.push(
-                                        h_flex()
-                                            .w_full()
-                                            .children(spans)
-                                            .into_any_element()
-                                    );
-                                    
-                                    byte_offset = line_end + 1;
-                                }
-                                
-                                v_flex().children(result)
-                            })
+                                    v_flex().children(result)
+                                })
+                                .into_any_element()
+                        } else {
+                            // Editable view when not searching
+                            Input::new(&current_input)
+                                .size_full()
+                                .p_2()
+                                .bg(theme.highlight_theme.style.editor_background.unwrap_or(gpui::rgb(0x1e1e1e).into()))
+                                .text_sm()
+                                .line_height(gpui::relative(1.5))
+                                .font_family("Monospace")
+                                .border_0()
+                                .into_any_element()
+                        }
                     )
             )
     }

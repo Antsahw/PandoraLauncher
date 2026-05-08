@@ -1,6 +1,6 @@
 use std::{collections::HashMap, rc::Rc, sync::{Arc, atomic::AtomicBool}};
 
-use bridge::{instance::InstanceStatus, keep_alive::KeepAliveHandle, message::{BridgeNotificationType, MessageToFrontend}};
+use bridge::{instance::InstanceStatus, keep_alive::{KeepAlive, KeepAliveHandle}, message::{BridgeNotificationType, MessageToFrontend}};
 use gpui::{AnyWindowHandle, App, AppContext, Bounds, Entity, Point, SharedString, Size, TitlebarOptions, Window, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, px, size};
 use gpui_component::{notification::{Notification, NotificationType}, Root, WindowExt};
 
@@ -169,10 +169,7 @@ impl Processor {
                         BridgeNotificationType::Error => NotificationType::Error,
                         BridgeNotificationType::Warning => NotificationType::Warning,
                     };
-                    let mut notification: Notification = (notification_type, SharedString::from(message)).into();
-                    if let NotificationType::Error = notification_type {
-                        notification = notification.autohide(false);
-                    }
+                    let notification: Notification = (notification_type, SharedString::from(message)).into();
                     window.push_notification(notification, cx);
                 });
             },
@@ -333,8 +330,76 @@ impl Processor {
                         });
                     }
                     
-                    // Refresh and activate the window if it exists
-                    if let Some(window_handle) = &self.game_output_window {
+                    // Create game output window if it doesn't exist yet, or activate it if it does
+                    if self.game_output_window.is_none() {
+                        // Window doesn't exist, create one now
+                        let name = self.game_output_names.get(&id).cloned().unwrap_or_else(|| "Game Output".into());
+                        let keep_alive = KeepAlive::new();
+                        let keep_alive_handle = keep_alive.create_handle();
+                        self.game_output_keep_alives.insert(id, keep_alive_handle);
+                        
+                        let window_bounds = InterfaceConfig::get(cx).game_output_bounds.clone();
+                        let options = WindowOptions {
+                            window_bounds: match window_bounds {
+                                crate::interface_config::WindowBounds::Windowed { x, y, w, h } => {
+                                    Some(WindowBounds::Windowed(Bounds::new(Point::new(px(x), px(y)), Size::new(px(w), px(h)))))
+                                },
+                                crate::interface_config::WindowBounds::Maximized { x, y, w, h } => {
+                                    Some(WindowBounds::Maximized(Bounds::new(Point::new(px(x), px(y)), Size::new(px(w), px(h)))))
+                                },
+                                crate::interface_config::WindowBounds::Fullscreen { x, y, w, h } => {
+                                    Some(WindowBounds::Fullscreen(Bounds::new(Point::new(px(x), px(y)), Size::new(px(w), px(h)))))
+                                },
+                                crate::interface_config::WindowBounds::Inherit => None,
+                            },
+                            window_min_size: Some(size(px(360.0), px(240.0))),
+                            titlebar: Some(TitlebarOptions {
+                                title: Some(ts!("system.game_output")),
+                                ..Default::default()
+                            }),
+                            window_decorations: Some(WindowDecorations::Server),
+                            ..Default::default()
+                        };
+                        
+                        let game_output = cx.new(|_| GameOutput::default());
+                        self.game_output_tabs.insert(id, game_output.clone());
+                        
+                        let processor_ptr = self as *mut Processor;
+                        let backend_handle = self.data.backend_handle.clone();
+                        let instance_id = self.game_output_instance_ids.get(&id).copied();
+                        let instance_root_path = if let Some(inst_id) = instance_id {
+                            InstanceEntries::find_root_path_by_id(&self.data.instances, inst_id, cx)
+                                .unwrap_or_else(|| Arc::from(std::path::Path::new(".")))
+                        } else {
+                            Arc::from(std::path::Path::new("."))
+                        };
+                        let dot_minecraft_path = if let Some(inst_id) = instance_id {
+                            InstanceEntries::find_dot_minecraft_by_id(&self.data.instances, inst_id, cx)
+                                .unwrap_or_else(|| Arc::from(std::path::Path::new(".")))
+                        } else {
+                            Arc::from(std::path::Path::new("."))
+                        };
+                        _ = cx.open_window(options, move |window, cx| {
+                            let window_handle = window.window_handle().downcast::<Root>().unwrap();
+                            
+                            let game_output_root = cx.new(|cx| {
+                                if let Some(inst_id) = instance_id {
+                                    GameOutputRoot::new_tabbed(id, inst_id, name, instance_root_path.clone(), dot_minecraft_path.clone(), keep_alive, game_output, backend_handle.clone(), window, cx)
+                                } else {
+                                    GameOutputRoot::new_tabbed(id, bridge::instance::InstanceID::dangling(), name, instance_root_path.clone(), dot_minecraft_path.clone(), keep_alive, game_output, backend_handle.clone(), window, cx)
+                                }
+                            });
+                            window.activate_window();
+                            
+                            unsafe {
+                                (*processor_ptr).game_output_window = Some(window_handle);
+                                (*processor_ptr).game_output_root = Some(game_output_root.clone());
+                            }
+
+                            cx.new(|cx| Root::new(game_output_root, window, cx))
+                        });
+                    } else if let Some(window_handle) = &self.game_output_window {
+                        // Window exists, just activate it
                         _ = window_handle.update(cx, |_, window, _cx| {
                             window.activate_window();
                             window.refresh();

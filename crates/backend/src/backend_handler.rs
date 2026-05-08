@@ -1,4 +1,7 @@
-use std::{borrow::Cow, io::{BufRead, Read}, sync::Arc, time::{Duration, Instant, SystemTime}};
+use std::{
+    borrow::Cow, io::{BufRead, Read, Write}, 
+    sync::Arc, time::{Duration, Instant, SystemTime}
+};
 
 use auth::{credentials::AccountCredentials, models::{MinecraftAccessToken}, secret::PlatformSecretStorage};
 use bridge::{
@@ -120,7 +123,92 @@ impl BackendState {
             },
             MessageToBackend::SendServerCommand { name, command } => {
                 log::info!("Sending command to server {}: {}", name, command);
-                // TODO: Implement actual command sending (write to stdin)
+                
+                // Special handling for "stop" command - kill the process like we do for instances
+                if command.as_str() == "stop" {
+                    log::info!("Stop command received for server {}, killing process group", name);
+                    let server_name_str = name.as_str().to_string();
+                    
+                    if let Some(mut child) = self.server_processes.write().remove(&server_name_str) {
+                        let pid = child.id();
+                        
+                        #[cfg(unix)]
+                        {
+                            // On Linux, terminate the entire process group instantly via SIGKILL.
+                            unsafe {
+                                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        let _ = child.kill();
+                        
+                        // Update game output
+                        if let Some(game_output_id) = self.server_game_output_ids.write().remove(&server_name_str) {
+                            self.send.send(MessageToFrontend::AddGameOutput {
+                                id: game_output_id,
+                                time: chrono::Local::now().timestamp_millis(),
+                                level: GameOutputLogLevel::Info,
+                                text: Arc::from([Arc::from("Pandora: Server killed")]),
+                            });
+                        }
+                        
+                        // Update server stats - calculate uptime
+                        if let Some(start_time) = self.server_start_times.write().remove(&server_name_str) {
+                            let uptime_secs = start_time.elapsed().as_secs();
+                            let server_dir = self.directories.servers_dir.join(name.as_str());
+                            let stats_path = server_dir.join("stats.json");
+                            
+                            if let Ok(stats_json) = crate::read_json::<schema::server_config::ServerStats>(&stats_path) {
+                                let mut stats = stats_json;
+                                stats.total_uptime_secs += uptime_secs;
+                                let _ = crate::write_safe(&stats_path, serde_json::to_string_pretty(&stats).unwrap_or_default().as_bytes());
+                            }
+                        }
+                        
+                        self.send.send_info(format!("Stopped server '{}'", name));
+                        
+                        // Reap the zombie process in background
+                        tokio::task::spawn_blocking(move || {
+                            log::debug!("Waiting for server process {} to exit...", pid);
+                            let _ = child.wait();
+                            log::debug!("Server process {} exited", pid);
+                        });
+                    } else {
+                        log::warn!("Server {} is not running", name);
+                        self.send.send_warning(format!("Server '{}' is not running", name));
+                    }
+                } else {
+                    // For other commands, try to send via stdin
+                    let server_name_str = name.as_str().to_string();
+                    if let Some(child) = self.server_processes.write().get_mut(&server_name_str) {
+                        if let Some(stdin) = child.stdin.as_mut() {
+                            let command_with_newline = format!("{}\n", command);
+                            match stdin.write_all(command_with_newline.as_bytes()) {
+                                Ok(_) => {
+                                    match stdin.flush() {
+                                        Ok(_) => {
+                                            log::info!("Command sent successfully to server {}", name);
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to flush stdin for server {}: {}", name, e);
+                                            self.send.send_error(format!("Failed to flush command to server: {}", e));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to write command to server {}: {}", name, e);
+                                    self.send.send_error(format!("Failed to send command to server: {}", e));
+                                }
+                            }
+                        } else {
+                            log::warn!("Server {} stdin is not available", name);
+                            self.send.send_warning(format!("Cannot send command: server stdin not available"));
+                        }
+                    } else {
+                        log::warn!("Server {} is not running", name);
+                        self.send.send_warning(format!("Server '{}' is not running", name));
+                    }
+                }
             },
             MessageToBackend::DeleteServer { name } => {
                 log::info!("Deleting server: {}", name);
@@ -244,8 +332,6 @@ impl BackendState {
                 
                 if let Err(e) = std::fs::write(&file_path, content.as_ref()) {
                     self.send.send_error(format!("Failed to write server file '{}': {}", filename, e));
-                } else {
-                    self.send.send_success(format!("Server file '{}' written successfully", filename));
                 }
             },
             MessageToBackend::SetServerJavaRuntime { name, java_runtime } => {
@@ -266,36 +352,197 @@ impl BackendState {
                     self.send.send_error(format!("Server '{}' not found", name));
                     return;
                 }
+
+                // Ensure .minecraft directory exists
+                let _ = std::fs::create_dir_all(server_path.join(".minecraft"));
+
+                // Load existing config using struct-based deserialization
+                let mut config: schema::server_config::ServerConfiguration = if config_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&config_path) {
+                        serde_json::from_str(&content).unwrap_or_default()
+                    } else {
+                        Default::default()
+                    }
+                } else {
+                    Default::default()
+                };
+
+                if config.java.is_none() {
+                    config.java = Some(schema::server_config::ServerJavaConfiguration::default());
+                }
+
+                if let Some(java) = &mut config.java {
+                    java.enabled = true;
+                    java.runtime_name = java_runtime.to_string();
+                }
+
+                if let Err(e) = std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+                    self.send.send_error(format!("Failed to save server Java runtime: {}", e));
+                } else {
+                    let jar_name = crate::server_installer::find_server_jar(&server_path);
+                    let java_config = self.config.write().get().java_runtimes.clone();
+                    let java_executable = crate::java_manager::resolve_java_executable(&java_config, Some(java_runtime.as_str()));
+                    let java_exe_str = java_executable.to_string_lossy();
+
+                    if let Err(e) = crate::server_installer::generate_start_script(&server_path, &java_exe_str, &jar_name) {
+                        log::error!("Failed to regenerate start.sh: {}", e);
+                        self.send.send_warning(format!("Java runtime saved but could not regenerate start script: {}", e));
+                    } else {
+                        self.send.send_success(format!("Server Java runtime set to '{}'", java_runtime));
+                    }
+                }
+            },
+            MessageToBackend::SetServerMemory { name, min_memory, max_memory } => {
+                log::info!("SetServerMemory: {} {}M-{}M", name, min_memory, max_memory);
+                let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+                    std::path::PathBuf::from(dir)
+                } else {
+                    let base_dirs = directories::BaseDirs::new().unwrap();
+                    let data_dir = base_dirs.data_dir();
+                    data_dir.join("PandoraLauncher")
+                };
+                let servers_dir = pandora_dir.join("servers");
+                let server_path = servers_dir.join(name.as_str());
+                let config_path = server_path.join(".minecraft/server_config.json");
+                log::debug!("Server path: {}", server_path.display());
+                log::debug!("Config path: {}", config_path.display());
+                
+                if !server_path.exists() {
+                    log::error!("Server path does not exist: {}", server_path.display());
+                    self.send.send_error(format!("Server '{}' not found", name));
+                    return;
+                }
                 
                 // Ensure .minecraft directory exists
                 let _ = std::fs::create_dir_all(server_path.join(".minecraft"));
                 
-                // Load existing config or create new one
-                let mut config = if config_path.exists() {
-                    serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap_or_default())
-                        .unwrap_or_else(|_| serde_json::json!({}))
-                } else {
-                    serde_json::json!({})
-                };
-                
-                // Update Java runtime with correct nested structure
-                if let Some(java_obj) = config.get_mut("java") {
-                    if let Some(obj) = java_obj.as_object_mut() {
-                        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                        obj.insert("runtime_name".to_string(), serde_json::Value::String(java_runtime.to_string()));
+                // Load existing config using struct-based deserialization
+                let mut config: schema::server_config::ServerConfiguration = if config_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&config_path) {
+                        serde_json::from_str(&content).unwrap_or_default()
+                    } else {
+                        Default::default()
                     }
                 } else {
-                    config["java"] = serde_json::json!({
-                        "enabled": true,
-                        "runtime_name": java_runtime.to_string()
+                    Default::default()
+                };
+                
+                // Check if values actually changed
+                let current_min = config.java.as_ref().and_then(|j| j.memory).map(|m| m.min);
+                let current_max = config.java.as_ref().and_then(|j| j.memory).map(|m| m.max);
+                
+                if current_min == Some(min_memory) && current_max == Some(max_memory) {
+                    log::debug!("Memory values unchanged, skipping");
+                    return; // Values haven't changed, skip processing
+                }
+                log::debug!("Memory changed from {:?}M-{:?}M to {}M-{}M", current_min, current_max, min_memory, max_memory);
+                
+                // Update memory settings using proper struct
+                if config.java.is_none() {
+                    config.java = Some(schema::server_config::ServerJavaConfiguration::default());
+                }
+                
+                if let Some(java) = &mut config.java {
+                    java.memory = Some(schema::server_config::ServerMemoryConfiguration {
+                        min: min_memory,
+                        max: max_memory,
                     });
                 }
                 
-                // Write back
+                // Write back using struct serialization
                 if let Err(e) = std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
-                    self.send.send_error(format!("Failed to save server Java runtime: {}", e));
+                    log::error!("Failed to write config: {}", e);
+                    self.send.send_error(format!("Failed to save server memory settings: {}", e));
                 } else {
-                    self.send.send_success(format!("Server Java runtime set to '{}'", java_runtime));
+                    log::info!("Config written to {}", config_path.display());
+                    // Regenerate start.sh with new memory settings
+                    let jar_name = crate::server_installer::find_server_jar(&server_path);
+                    let java_config = self.config.write().get().java_runtimes.clone();
+                    let server_runtime_name = config.java.as_ref().map(|j| j.runtime_name.clone());
+                    let java_executable = crate::java_manager::resolve_java_executable(&java_config, server_runtime_name.as_deref());
+                    let java_exe_str = java_executable.to_string_lossy();
+
+                    if let Err(e) = crate::server_installer::generate_start_script(&server_path, &java_exe_str, &jar_name) {
+                        log::error!("Failed to regenerate start.sh: {}", e);
+                        self.send.send_warning(format!("Memory saved but could not regenerate start script: {}", e));
+                    } else {
+                        log::info!("start.sh regenerated successfully");
+                        self.send.send_success(format!("Server memory set to {}M-{}M", min_memory, max_memory));
+                    }
+                }
+            },
+            MessageToBackend::SetServerJVMFlags { name, flags } => {
+                log::info!("SetServerJVMFlags: {} '{}'", name, flags);
+                let pandora_dir = if let Ok(dir) = std::env::var("PANDORA_DIR") {
+                    std::path::PathBuf::from(dir)
+                } else {
+                    let base_dirs = directories::BaseDirs::new().unwrap();
+                    let data_dir = base_dirs.data_dir();
+                    data_dir.join("PandoraLauncher")
+                };
+                let servers_dir = pandora_dir.join("servers");
+                let server_path = servers_dir.join(name.as_str());
+                let config_path = server_path.join(".minecraft/server_config.json");
+                log::debug!("Server path: {}", server_path.display());
+                
+                if !server_path.exists() {
+                    log::error!("Server path does not exist: {}", server_path.display());
+                    self.send.send_error(format!("Server '{}' not found", name));
+                    return;
+                }
+                
+                // Ensure .minecraft directory exists
+                let _ = std::fs::create_dir_all(server_path.join(".minecraft"));
+                
+                // Load existing config using struct-based deserialization
+                let mut config: schema::server_config::ServerConfiguration = if config_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&config_path) {
+                        serde_json::from_str(&content).unwrap_or_default()
+                    } else {
+                        Default::default()
+                    }
+                } else {
+                    Default::default()
+                };
+                
+                // Check if flags actually changed
+                let current_flags = config.java.as_ref().map(|j| j.jvm_flags.as_str());
+                
+                if current_flags == Some(flags.as_str()) {
+                    log::debug!("JVM flags unchanged, skipping");
+                    return; // Flags haven't changed, skip processing
+                }
+                log::debug!("JVM flags changed from {:?} to '{}'", current_flags, flags);
+                
+                // Update JVM flags using proper struct
+                if config.java.is_none() {
+                    config.java = Some(schema::server_config::ServerJavaConfiguration::default());
+                }
+                
+                if let Some(java) = &mut config.java {
+                    java.jvm_flags = flags.to_string();
+                }
+                
+                // Write back using struct serialization
+                if let Err(e) = std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+                    log::error!("Failed to write config: {}", e);
+                    self.send.send_error(format!("Failed to save server JVM flags: {}", e));
+                } else {
+                    log::info!("Config written to {}", config_path.display());
+                    // Regenerate start.sh with new JVM flags
+                    let jar_name = crate::server_installer::find_server_jar(&server_path);
+                    let java_config = self.config.write().get().java_runtimes.clone();
+                    let server_runtime_name = config.java.as_ref().map(|j| j.runtime_name.clone());
+                    let java_executable = crate::java_manager::resolve_java_executable(&java_config, server_runtime_name.as_deref());
+                    let java_exe_str = java_executable.to_string_lossy();
+
+                    if let Err(e) = crate::server_installer::generate_start_script(&server_path, &java_exe_str, &jar_name) {
+                        log::error!("Failed to regenerate start.sh: {}", e);
+                        self.send.send_warning(format!("JVM flags saved but could not regenerate start script: {}", e));
+                    } else {
+                        log::info!("start.sh regenerated successfully");
+                        self.send.send_success(format!("Server JVM flags set to '{}'", flags));
+                    }
                 }
             },
             MessageToBackend::DeleteInstance { id } => {
@@ -439,11 +686,17 @@ impl BackendState {
                 }
                 
                 for mut process in instance.processes.drain(..) {
-                    let result = process.kill();
-                    if result.is_err() {
-                        self.send.send_error("Failed to kill instance");
-                        log::error!("Failed to kill instance: {:?}", result.unwrap_err());
+                    let pid = process.id();
+
+                    #[cfg(unix)]
+                    {
+                        // On Linux, terminate the entire process group instantly via SIGKILL.
+                        unsafe {
+                            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                        }
                     }
+                    #[cfg(not(unix))]
+                    let _ = process.kill();
                 }
 
                 if let Some(game_output_id) = instance.game_output_id {
@@ -2351,7 +2604,6 @@ impl BackendState {
         
         let server_dir = self.directories.servers_dir.join(name);
         
-        // Check if server directory exists
         if !server_dir.exists() {
             self.send.send_error(format!("Server directory not found: {:?}", server_dir));
             modal_action.set_error_message(format!("Server directory not found: {:?}", server_dir).into());
@@ -2359,62 +2611,51 @@ impl BackendState {
             return;
         }
 
-        // Load server configuration for Java settings
-        let server_config_path = server_dir.join(".minecraft").join("server_config.json");
-        let server_runtime_name: Option<String> = if server_config_path.exists() {
-            if let Ok(content) = tokio::fs::read_to_string(&server_config_path).await {
-                if let Ok(config) = serde_json::from_str::<schema::server_config::ServerConfiguration>(&content) {
-                    config.java.and_then(|java| {
-                        if java.enabled && !java.runtime_name.is_empty() {
-                            Some(java.runtime_name)
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+        // 1. Resolve configuration to ensure start.sh is up to date
+        let config_path = server_dir.join(".minecraft/server_config.json");
+        let config: schema::server_config::ServerConfiguration = if config_path.exists() {
+            crate::read_json(&config_path).unwrap_or_default()
         } else {
-            None
+            Default::default()
         };
 
-        // Resolve which Java to use
         let java_config = self.config.write().get().java_runtimes.clone();
-        let java_executable = crate::java_manager::resolve_java_executable(
-            &java_config,
-            server_runtime_name.as_deref(),
-        );
+        let server_runtime_name = config.java.as_ref().map(|j| j.runtime_name.as_str());
+        let java_executable = crate::java_manager::resolve_java_executable(&java_config, server_runtime_name);
+        let jar_name = crate::server_installer::find_server_jar(&server_dir);
+        let java_exe_str = java_executable.to_string_lossy();
 
-        // Find the server JAR file
-        let mut jar_path = None;
-        if let Ok(entries) = std::fs::read_dir(&server_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "jar") {
-                    jar_path = Some(path);
-                    break;
-                }
+        // 2. Regenerate start.sh right before starting to ensure memory/jar settings are current
+        let _ = crate::server_installer::generate_start_script(&server_dir, &java_exe_str, &jar_name);
+
+        let start_script = server_dir.join("start.sh");
+        if !start_script.exists() {
+            self.send.send_error("Failed to generate start.sh".to_string());
+            modal_action.set_finished();
+            return;
+        }
+
+        // 3. Execute via bash. Because start.sh uses 'exec', the java process will 
+        // replace bash and receive the kill signals directly.
+        let mut cmd = std::process::Command::new("bash");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    // Put the child in its own process group so we can kill it and all its children.
+                    // This is essential on Linux to ensure the Java process is killed along with the bash shell.
+                    // SAFETY: setpgid is async-signal-safe and appropriate for pre_exec.
+                    if ::libc::setpgid(0, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
             }
         }
 
-        let Some(jar_path) = jar_path else {
-            self.send.send_error("No JAR file found in server directory".to_string());
-            modal_action.set_error_message("No JAR file found in server directory".into());
-            modal_action.set_finished();
-            return;
-        };
-
-        // Prepare process with resolved Java
-        let mut cmd = std::process::Command::new(&java_executable);
-        cmd
-            .arg("-Xmx1024M")
-            .arg("-Xms512M")
-            .arg("-jar")
-            .arg(&jar_path)
-            .arg("nogui")
+        cmd.arg(&start_script)
             .current_dir(&server_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -2471,48 +2712,70 @@ impl BackendState {
     }
 
     pub async fn stop_server(&self, name: &str) {
-        // Calculate uptime if server was running
-        if let Some(start_time) = self.server_start_times.write().remove(name) {
-            let uptime_secs = start_time.elapsed().as_secs();
+        log::info!("Pandora: Forcefully terminating server process group: {}", name);
+
+        // 1. Remove from maps immediately to clear state
+        let child = self.server_processes.write().remove(name); // child is Option<std::process::Child>
+        let start_time = self.server_start_times.write().remove(name);
+        let game_output_id = self.server_game_output_ids.write().remove(name);
+
+        // 2. Perform the HARD kill
+        if let Some(mut child_proc) = child {
+            let pid = child_proc.id();
+
+            #[cfg(unix)]
+            {
+                // On Linux, we send SIGKILL (-9) to the negative PID.
+                // Because we started the server with setpgid(0,0), the PID is the Group ID.
+                // SIGKILL cannot be caught or ignored; the server will NOT save dimensions.
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // On non-Unix (e.g., Windows), use the standard kill method
+                log::debug!("Calling child_proc.kill() for non-Unix system (PID: {})...", pid);
+                let _ = child_proc.kill();
+                log::debug!("child_proc.kill() called for non-Unix system (PID: {}).", pid);
+            }
             
-            // Update server stats
+            // Update Game Output UI immediately
+            if let Some(id) = game_output_id {
+                self.send.send(MessageToFrontend::AddGameOutput {
+                    id,
+                    time: chrono::Local::now().timestamp_millis(),
+                    level: GameOutputLogLevel::Info,
+                    text: Arc::from([Arc::from("Pandora: Process group killed (SIGKILL).")]),
+                });
+            }
+
+            // Reap the zombie process in background so we don't block this task
+            tokio::task::spawn_blocking(move || {
+                let child_id = child_proc.id(); // Capture ID before move
+                log::debug!("Waiting for process {} to exit...", child_id);
+                let exit_status = child_proc.wait();
+                log::debug!("Process {} exited with status: {:?}", child_id, exit_status);
+            });
+        } else {
+            self.send.send_warning(format!("Server '{}' is not running or already stopped", name));
+        }
+
+        // 3. Update stats if we were tracking uptime
+        if let Some(time) = start_time {
+            let uptime_secs = time.elapsed().as_secs();
             let server_dir = self.directories.servers_dir.join(name);
             let stats_path = server_dir.join("stats.json");
             
-            // Ensure stats file exists with defaults if needed
-            let mut stats = if let Ok(stats_json) = crate::read_json::<schema::server_config::ServerStats>(&stats_path) {
-                stats_json
-            } else {
-                schema::server_config::ServerStats {
+            let mut stats = crate::read_json::<schema::server_config::ServerStats>(&stats_path)
+                .unwrap_or(schema::server_config::ServerStats {
                     total_uptime_secs: 0,
                     start_count: 0,
                     last_started_unix_ms: None,
-                }
-            };
+                });
             
             stats.total_uptime_secs += uptime_secs;
             let _ = crate::write_safe(&stats_path, serde_json::to_string_pretty(&stats).unwrap_or_default().as_bytes());
-        }
-        
-        if let Some(mut child) = self.server_processes.write().remove(name) {
-            match child.kill() {
-                Ok(_) => {
-                    if let Some(game_output_id) = self.server_game_output_ids.write().remove(name) {
-                        self.send.send(MessageToFrontend::AddGameOutput {
-                            id: game_output_id,
-                            time: chrono::Local::now().timestamp_millis(),
-                            level: GameOutputLogLevel::Info,
-                            text: Arc::from([Arc::from("Pandora: Killed")]),
-                        });
-                    }
-                    let _ = child.wait();
-                }
-                Err(e) => {
-                    self.send.send_error(format!("Failed to kill server: {}", e));
-                }
-            }
-        } else {
-            self.send.send_warning(format!("Server '{}' is not running", name));
         }
     }
 }
