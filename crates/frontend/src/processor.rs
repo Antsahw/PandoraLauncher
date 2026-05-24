@@ -399,9 +399,8 @@ impl Processor {
                             cx.new(|cx| Root::new(game_output_root, window, cx))
                         });
                     } else if let Some(window_handle) = &self.game_output_window {
-                        // Window exists, just activate it
+                        // Window exists, just refresh it (don't activate - window already came to top when created)
                         _ = window_handle.update(cx, |_, window, _cx| {
-                            window.activate_window();
                             window.refresh();
                         });
                     }

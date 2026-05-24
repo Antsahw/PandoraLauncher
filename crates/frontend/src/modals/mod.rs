@@ -5,6 +5,7 @@ pub mod delete_instance;
 pub mod delete_server;
 pub mod generic;
 pub mod modrinth_install;
+pub mod technic_install;
 pub mod select_icon;
 pub mod settings;
 pub mod update_prompt;

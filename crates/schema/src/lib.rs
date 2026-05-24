@@ -23,6 +23,7 @@ pub mod pandora_update;
 pub mod resourcepack;
 pub mod server_config;
 pub mod server_software_versions;
+pub mod technic;
 pub mod text_component;
 pub mod version;
 pub mod version_manifest;

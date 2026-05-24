@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::{
     component::{menu::{MenuGroup, MenuGroupItem}, page_path::PagePath, resize_panel::{ResizePanel, ResizePanelState}, shrinking_text::ShrinkingText, title_bar::TitleBar}, entity::{
         DataEntities, instance::{InstanceAddedEvent, InstanceEntries, InstanceModifiedEvent, InstanceMovedToTopEvent, InstanceRemovedEvent}
-    }, icon::PandoraIcon, interface_config::InterfaceConfig, modals, pages::{curseforge_page::CurseforgeSearchPage, import::ImportPage, instance::{instance_page::InstancePage, server_page::ServerPage}, instances_page::InstancesPage, servers_page::ServersPage, modrinth_page::ModrinthSearchPage, modrinth_project_page::ModrinthProjectPage, page::Page, skins_page::SkinsPage, syncing_page::SyncingPage}, png_render_cache, ts
+    }, icon::PandoraIcon, interface_config::InterfaceConfig, modals, pages::{curseforge_page::CurseforgeSearchPage, import::ImportPage, instance::{instance_page::InstancePage, server_page::ServerPage}, instances_page::InstancesPage, servers_page::ServersPage, modrinth_page::ModrinthSearchPage, modrinth_project_page::ModrinthProjectPage, technic_page::TechnicSearchPage, page::Page, skins_page::SkinsPage, syncing_page::SyncingPage}, png_render_cache, ts
 };
 
 pub struct LauncherUI {
@@ -41,6 +41,9 @@ pub enum PageType {
         installing_for: Option<SharedString>,
     },
     Curseforge {
+        installing_for: Option<SharedString>,
+    },
+    Technic {
         installing_for: Option<SharedString>,
     },
     Import,
@@ -78,6 +81,13 @@ impl PageType {
                     ts!("curseforge.name")
                 }
             },
+            PageType::Technic { installing_for } => {
+                if installing_for.is_some() {
+                    "Install from Technic".into()
+                } else {
+                    "Technic".into()
+                }
+            },
             PageType::Import => "Import".into(),
             PageType::Syncing => ts!("instance.sync.label"),
             PageType::ModrinthProject { project_title, .. } => project_title.clone(),
@@ -97,6 +107,7 @@ pub enum LauncherPage {
     Skins(Entity<SkinsPage>),
     Modrinth(Entity<ModrinthSearchPage>),
     Curseforge(Entity<CurseforgeSearchPage>),
+    Technic(Entity<TechnicSearchPage>),
     Import(Entity<ImportPage>),
     Syncing(Entity<SyncingPage>),
     ModrinthProject(Entity<ModrinthProjectPage>),
@@ -118,6 +129,7 @@ impl LauncherPage {
             LauncherPage::Skins(entity) => process(entity, window, cx),
             LauncherPage::Modrinth(entity) => process(entity, window, cx),
             LauncherPage::Curseforge(entity) => process(entity, window, cx),
+            LauncherPage::Technic(entity) => process(entity, window, cx),
             LauncherPage::Import(entity) => process(entity, window, cx),
             LauncherPage::Syncing(entity) => process(entity, window, cx),
             LauncherPage::ModrinthProject(entity) => process(entity, window, cx),
@@ -275,6 +287,14 @@ impl LauncherUI {
                 });
                 Ok(LauncherPage::Curseforge(page))
             },
+            PageType::Technic { installing_for } => {
+                let installing_for = installing_for.as_ref().and_then(|name| InstanceEntries::find_id_by_name(&data.instances, name, cx));
+
+                let page = cx.new(|cx| {
+                    TechnicSearchPage::new(installing_for, data, window, cx)
+                });
+                Ok(LauncherPage::Technic(page))
+            },
             PageType::Import => {
                 Ok(LauncherPage::Import(cx.new(|cx| ImportPage::new(data, window, cx))))
             },
@@ -381,6 +401,11 @@ impl Render for LauncherUI {
                 .active(matches!(page_type, PageType::Curseforge { installing_for: None }))
                 .on_click(cx.listener(|launcher, _, window, cx| {
                     launcher.switch_page(PageType::Curseforge { installing_for: None }, &[], window, cx);
+                })))
+            .child(MenuGroupItem::new("Technic")
+                .active(matches!(page_type, PageType::Technic { installing_for: None }))
+                .on_click(cx.listener(|launcher, _, window, cx| {
+                    launcher.switch_page(PageType::Technic { installing_for: None }, &[], window, cx);
                 })));
 
         let files_group = MenuGroup::new("Files")

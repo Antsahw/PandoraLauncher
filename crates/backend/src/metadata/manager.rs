@@ -38,6 +38,8 @@ pub struct MetadataManagerStates {
     pub(super) curseforge_search: HashMap<CurseforgeSearchRequest, MetaLoadStateWrapper<CurseforgeSearchResult>>,
     pub(super) curseforge_get_mod_files: HashMap<CurseforgeGetModFilesRequest, MetaLoadStateWrapper<CurseforgeGetModFilesResult>>,
     pub(super) curseforge_get_files: HashMap<CurseforgeGetFilesRequest, MetaLoadStateWrapper<CurseforgeGetModFilesResult>>,
+    pub(super) technic_search: HashMap<schema::technic::TechnicSearchRequest, MetaLoadStateWrapper<schema::technic::TechnicSearchResult>>,
+    pub(super) technic_modpack_info: HashMap<schema::technic::TechnicModpackRequest, MetaLoadStateWrapper<schema::technic::TechnicModpackInfo>>,
 }
 
 pub struct MetadataManager {
@@ -65,6 +67,7 @@ pub enum MetaLoadError {
     Error(Arc<str>),
     ErrorWithDescription(Arc<str>, Arc<str>),
     NonOK(u16),
+    TechnicApiUnavailable,
 }
 
 impl Display for MetaLoadError {
@@ -110,6 +113,9 @@ impl Display for MetaLoadError {
             }
             Self::NonOK(status_code) => {
                 f.write_fmt(format_args!("Non-OK response: {}", *status_code))
+            }
+            Self::TechnicApiUnavailable => {
+                f.write_str("Technic Platform API is currently unavailable. The Technic API appears to have authentication requirements that are not yet supported. Please try again later or contact Technic support.")
             }
             Self::TokioJoin(error) => f.debug_tuple("TokioJoin").field(error).finish(),
         }
@@ -319,6 +325,15 @@ impl MetadataManager {
 
                 let status = response.status();
                 if status != StatusCode::OK {
+                    // Handle Technic API 401 Unauthorized early (before consuming response)
+                    if status == StatusCode::UNAUTHORIZED {
+                        let url = response.url();
+                        if url.host_str().map(|h| h.contains("technicpack.net")).unwrap_or(false) {
+                            log::warn!("Technic API returned 401 Unauthorized. The API may require authentication.");
+                            return Err(MetaLoadError::TechnicApiUnavailable);
+                        }
+                    }
+
                     if status == StatusCode::BAD_REQUEST {
                         if let Ok(bytes) = response.bytes().await {
                             #[derive(Deserialize)]

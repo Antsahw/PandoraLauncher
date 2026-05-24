@@ -951,6 +951,14 @@ impl ContentSources {
                 data.push(3_u8);
                 data.push(4_u8);
                 data.extend_from_slice(&project_id.to_le_bytes());
+            },
+            ContentSource::TechnicModpack { modpack_name } => {
+                data.push(4_u8);
+                if modpack_name.len() > 127 {
+                    panic!("technic modpack name was unexpectedly big: {:?}", &modpack_name);
+                }
+                data.push(modpack_name.len() as u8);
+                data.extend_from_slice(modpack_name.as_bytes());
             }
         }
     }

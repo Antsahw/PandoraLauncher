@@ -2,8 +2,6 @@ use std::{
     collections::HashMap, path::{Path, PathBuf}, 
     sync::Arc, time::{Duration, Instant, SystemTime}
 };
-#[cfg(unix)]
-use libc;
 
 use auth::{
     authenticator::{Authenticator, MsaAuthorizationError, XboxAuthenticateError},

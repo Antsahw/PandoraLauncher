@@ -273,7 +273,96 @@ pub fn find_server_jar(server_dir: &Path) -> String {
 }
 
 /// Generate a start.sh script for a server with memory and JVM settings
+/// 
+/// If start.sh already exists, it is left unchanged to preserve user edits.
+/// Use `force_regenerate_start_script()` to force an overwrite.
 pub fn generate_start_script(
+    server_dir: &Path,
+    java_executable: &str,
+    jar_filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let script_path = server_dir.join("start.sh");
+    
+    // If start.sh already exists, preserve it (user may have manually edited memory settings)
+    if script_path.exists() {
+        log::debug!("start.sh already exists at {:?}, preserving user edits", script_path);
+        return Ok(());
+    }
+    
+    // Try to read server config for memory and JVM settings
+    let config_path = server_dir.join(".minecraft").join("server_config.json");
+    log::debug!("Reading config from: {}", config_path.display());
+    let (memory_config, jvm_flags) = if config_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            log::debug!("Config content: {}", content);
+            if let Ok(config) = serde_json::from_str::<schema::server_config::ServerConfiguration>(&content) {
+                let mem = config.java
+                    .as_ref()
+                    .and_then(|java| java.memory);
+                let flags = config.java
+                    .as_ref()
+                    .and_then(|java| {
+                        if java.jvm_flags.is_empty() {
+                            None
+                        } else {
+                            Some(java.jvm_flags.clone())
+                        }
+                    });
+                log::debug!("Parsed memory: {:?}, flags: {:?}", mem, flags);
+                (mem, flags)
+            } else {
+                log::warn!("Failed to parse config JSON");
+                (None, None)
+            }
+        } else {
+            log::warn!("Could not read config file");
+            (None, None)
+        }
+    } else {
+        log::debug!("Config file does not exist: {}", config_path.display());
+        (None, None)
+    };
+    
+    // Get memory settings with defaults
+    let (min_mem, max_mem) = if let Some(mem) = memory_config {
+        (mem.min, mem.max)
+    } else {
+        (512, 1024) // defaults
+    };
+    
+    // Build the script content with proper memory settings and JVM flags
+    let jvm_args = if let Some(flags) = jvm_flags {
+        format!("-Xms{}M -Xmx{}M {}", min_mem, max_mem, flags)
+    } else {
+        format!("-Xms{}M -Xmx{}M", min_mem, max_mem)
+    };
+    
+    log::debug!("Generated JVM args: {}", jvm_args);
+    
+    let script_content = format!(
+        "#!/bin/bash\ncd \"$( cd \"$( dirname \"${{BASH_SOURCE[0]}}\" )\" && pwd )\"\nexec \"{java}\" {args} -jar \"{jar}\" nogui\n",
+        java = java_executable,
+        args = jvm_args,
+        jar = jar_filename
+    );
+    
+    log::info!("Writing start.sh with content");
+    std::fs::write(&script_path, script_content)?;
+    log::info!("Wrote start.sh to: {}", script_path.display());
+    
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&script_path, perms)?;
+    }
+    
+    Ok(())
+}
+
+/// Force regenerate start.sh, overwriting any existing file
+/// Used when memory settings are explicitly changed via UI
+pub fn force_regenerate_start_script(
     server_dir: &Path,
     java_executable: &str,
     jar_filename: &str,
@@ -335,7 +424,7 @@ pub fn generate_start_script(
         jar = jar_filename
     );
     
-    log::info!("Writing start.sh with content");
+    log::info!("Force regenerating start.sh with content");
     let script_path = server_dir.join("start.sh");
     std::fs::write(&script_path, script_content)?;
     log::info!("Wrote start.sh to: {}", script_path.display());

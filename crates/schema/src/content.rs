@@ -13,5 +13,8 @@ pub enum ContentSource {
     },
     CurseforgeProject {
         project_id: u32,
+    },
+    TechnicModpack {
+        modpack_name: Arc<str>,
     }
 }

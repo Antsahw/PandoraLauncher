@@ -64,6 +64,14 @@ impl BackendState {
                             let (result, handle) = meta.fetch_with_keepalive(&CurseforgeGetModFilesMetadataItem(request), force_reload).await;
                             (result.map(MetadataResult::CurseforgeGetModFilesResult), handle)
                         },
+                        bridge::meta::MetadataRequest::TechnicSearch(ref search) => {
+                            let (result, handle) = meta.fetch_with_keepalive(&crate::metadata::items::TechnicSearchMetadataItem(search), force_reload).await;
+                            (result.map(MetadataResult::TechnicSearchResult), handle)
+                        },
+                        bridge::meta::MetadataRequest::TechnicModpackInfo(ref modpack) => {
+                            let (result, handle) = meta.fetch_with_keepalive(&crate::metadata::items::TechnicModpackInfoMetadataItem(modpack), force_reload).await;
+                            (result.map(MetadataResult::TechnicModpackInfoResult), handle)
+                        },
                         bridge::meta::MetadataRequest::ServerSoftwareVersions(ref software) => {
                             // Fetch available server versions directly
                             let software_name = software.clone();
@@ -384,7 +392,7 @@ impl BackendState {
                     let java_executable = crate::java_manager::resolve_java_executable(&java_config, Some(java_runtime.as_str()));
                     let java_exe_str = java_executable.to_string_lossy();
 
-                    if let Err(e) = crate::server_installer::generate_start_script(&server_path, &java_exe_str, &jar_name) {
+                    if let Err(e) = crate::server_installer::force_regenerate_start_script(&server_path, &java_exe_str, &jar_name) {
                         log::error!("Failed to regenerate start.sh: {}", e);
                         self.send.send_warning(format!("Java runtime saved but could not regenerate start script: {}", e));
                     } else {
@@ -462,7 +470,7 @@ impl BackendState {
                     let java_executable = crate::java_manager::resolve_java_executable(&java_config, server_runtime_name.as_deref());
                     let java_exe_str = java_executable.to_string_lossy();
 
-                    if let Err(e) = crate::server_installer::generate_start_script(&server_path, &java_exe_str, &jar_name) {
+                    if let Err(e) = crate::server_installer::force_regenerate_start_script(&server_path, &java_exe_str, &jar_name) {
                         log::error!("Failed to regenerate start.sh: {}", e);
                         self.send.send_warning(format!("Memory saved but could not regenerate start script: {}", e));
                     } else {
@@ -536,7 +544,7 @@ impl BackendState {
                     let java_executable = crate::java_manager::resolve_java_executable(&java_config, server_runtime_name.as_deref());
                     let java_exe_str = java_executable.to_string_lossy();
 
-                    if let Err(e) = crate::server_installer::generate_start_script(&server_path, &java_exe_str, &jar_name) {
+                    if let Err(e) = crate::server_installer::force_regenerate_start_script(&server_path, &java_exe_str, &jar_name) {
                         log::error!("Failed to regenerate start.sh: {}", e);
                         self.send.send_warning(format!("JVM flags saved but could not regenerate start script: {}", e));
                     } else {
@@ -685,7 +693,7 @@ impl BackendState {
                     });
                 }
                 
-                for mut process in instance.processes.drain(..) {
+                for process in instance.processes.drain(..) {
                     let pid = process.id();
 
                     #[cfg(unix)]
@@ -1265,6 +1273,12 @@ impl BackendState {
                                             project_id,
                                         })
                                     }
+                                },
+                                ContentSource::TechnicModpack { .. } => {
+                                    // TODO: Implement Technic modpack update checking
+                                    tracker.add_count(1);
+                                    tracker.notify();
+                                    Ok(ContentUpdateAction::ErrorNotFound)
                                 }
                             }
                         }.map_ok(|action| UpdateResult {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use schema::{curseforge::{CurseforgeGetModFilesRequest, CurseforgeGetModFilesResult, CurseforgeSearchRequest, CurseforgeSearchResult}, fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, modrinth::{ModrinthProjectRequest, ModrinthProjectResult, ModrinthProjectVersionsRequest, ModrinthProjectVersionsResult, ModrinthSearchRequest, ModrinthSearchResult}, server_software_versions::ServerSoftwareVersions, version_manifest::MinecraftVersionManifest};
+use schema::{curseforge::{CurseforgeGetModFilesRequest, CurseforgeGetModFilesResult, CurseforgeSearchRequest, CurseforgeSearchResult}, fabric_loader_manifest::FabricLoaderManifest, forge::{ForgeMavenManifest, NeoforgeMavenManifest}, modrinth::{ModrinthProjectRequest, ModrinthProjectResult, ModrinthProjectVersionsRequest, ModrinthProjectVersionsResult, ModrinthSearchRequest, ModrinthSearchResult}, server_software_versions::ServerSoftwareVersions, technic::{TechnicSearchRequest, TechnicSearchResult, TechnicModpackRequest, TechnicModpackInfo}, version_manifest::MinecraftVersionManifest};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MetadataRequest {
@@ -14,6 +14,8 @@ pub enum MetadataRequest {
     ModrinthProject(ModrinthProjectRequest),
     CurseforgeSearch(CurseforgeSearchRequest),
     CurseforgeGetModFiles(CurseforgeGetModFilesRequest),
+    TechnicSearch(TechnicSearchRequest),
+    TechnicModpackInfo(TechnicModpackRequest),
 }
 
 #[derive(Debug)]
@@ -28,4 +30,6 @@ pub enum MetadataResult {
     ModrinthProjectResult(Arc<ModrinthProjectResult>),
     CurseforgeSearchResult(Arc<CurseforgeSearchResult>),
     CurseforgeGetModFilesResult(Arc<CurseforgeGetModFilesResult>),
+    TechnicSearchResult(Arc<TechnicSearchResult>),
+    TechnicModpackInfoResult(Arc<TechnicModpackInfo>),
 }

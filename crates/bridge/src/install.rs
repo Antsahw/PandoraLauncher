@@ -47,6 +47,10 @@ pub enum ContentDownload {
         project_id: u32,
         install_dependencies: bool,
     },
+    Technic {
+        modpack_name: Arc<str>,
+        version: Arc<str>,
+    },
     Url {
         url: Arc<str>,
         sha1: Arc<str>,
